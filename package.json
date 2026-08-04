@@ -2,7 +2,7 @@
   "name": "whatispugdoing",
   "private": true,
   "scripts": {
-    "build": "rm -rf dist && mkdir -p dist && cp index.html styles.css script.js dist/ && cp -r assets dist/ && rm -f dist/assets/ref-mockup.png dist/assets/meagan-source.png dist/assets/_crop-test-*.jpg",
+    "build": "rm -rf dist && mkdir -p dist && cp index.html styles.css dist/ && cp -r assets dist/ && rm -f dist/assets/ref-mockup.png dist/assets/meagan-source.png dist/assets/pug-hero-alt.jpg",
     "deploy": "npm run build && wrangler deploy"
   },
   "devDependencies": {
