@@ -14,11 +14,11 @@ npx --yes serve .
 
 1. Push this repo to GitHub.
 2. In Cloudflare → Workers & Pages → Create → Connect to Git.
-3. Build settings:
-   - Framework preset: None
+3. Build settings (Workers / Pages CI):
    - Build command: `npm run build`
-   - Build output directory: `dist`
-4. Attach the custom domain `whatispugdoing.com`.
+   - Deploy command: `npx wrangler deploy`
+   - Do **not** put `/` or `$` in Deploy command — those are paths, not commands
+4. After deploy → **Custom domains** → add `whatispugdoing.com`.
 
 ## Drop-in assets
 

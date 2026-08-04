@@ -2,6 +2,10 @@
   "name": "whatispugdoing",
   "private": true,
   "scripts": {
-    "build": "mkdir -p dist && cp index.html styles.css script.js dist/ && cp -r assets dist/"
+    "build": "mkdir -p dist && cp index.html styles.css script.js dist/ && cp -r assets dist/",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.118.0"
   }
 }
