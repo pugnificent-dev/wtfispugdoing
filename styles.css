@@ -111,7 +111,36 @@ a { color: inherit; text-decoration: none; }
 }
 
 .est { text-align: right; }
-.top-star { color: var(--gold); font-size: 0.7rem; }
+.top-star { color: var(--gold); font-size: 0.85rem; line-height: 1; }
+
+.gold-arc {
+  position: absolute;
+  pointer-events: none;
+  border: 1px solid rgba(198, 161, 90, 0.35);
+  border-radius: 50%;
+}
+
+.gold-arc-tr {
+  width: 9rem;
+  height: 9rem;
+  top: -2.5rem;
+  right: -3.5rem;
+  border-color: transparent transparent transparent rgba(198, 161, 90, 0.4);
+  transform: rotate(25deg);
+}
+
+.gold-arc-tl {
+  width: 6rem;
+  height: 6rem;
+  top: 4.5rem;
+  left: -3rem;
+  border-color: transparent rgba(198, 161, 90, 0.28) transparent transparent;
+}
+
+.page-cover .page-paper {
+  position: relative;
+  overflow: visible;
+}
 
 .photo-block {
   display: flex;
@@ -185,19 +214,30 @@ a { color: inherit; text-decoration: none; }
 
 .photo-star {
   position: absolute;
-  right: -0.45rem;
-  top: 48%;
+  z-index: 3;
   color: var(--gold);
-  font-size: 0.75rem;
-  z-index: 2;
+  font-size: 0.85rem;
+  line-height: 1;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.photo-star-tr {
+  top: 0.55rem;
+  right: -0.35rem;
+}
+
+.photo-star-bl {
+  bottom: 0.85rem;
+  left: -0.4rem;
+  font-size: 0.7rem;
 }
 
 .moon-row {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  margin: 0.2rem 0 1.2rem;
+  gap: 0.58rem;
+  margin: 0.35rem 0 1.3rem;
 }
 
 .moon-row::before,
@@ -205,24 +245,30 @@ a { color: inherit; text-decoration: none; }
   content: "";
   flex: 1;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(198, 161, 90, 0.45));
+  background: linear-gradient(90deg, transparent, rgba(198, 161, 90, 0.65));
 }
 
 .moon-row::after {
-  background: linear-gradient(90deg, rgba(198, 161, 90, 0.45), transparent);
+  background: linear-gradient(90deg, rgba(198, 161, 90, 0.65), transparent);
 }
 
 .moon {
-  width: 0.5rem;
-  height: 0.5rem;
+  width: 0.62rem;
+  height: 0.62rem;
   border-radius: 50%;
-  border: 1px solid var(--gold);
-  box-shadow: inset -0.28rem 0 0 0 var(--gold);
+  border: 1.5px solid var(--gold);
+  box-shadow: inset -0.34rem 0 0 0 var(--gold);
+  background: transparent;
+  flex-shrink: 0;
 }
 
 .moon-full {
   background: var(--gold);
   box-shadow: none;
+}
+
+.moon-crescent {
+  box-shadow: inset -0.4rem 0 0 0 var(--gold);
 }
 
 .moon-flip { transform: scaleX(-1); }
@@ -232,7 +278,31 @@ a { color: inherit; text-decoration: none; }
   font-size: 0.6rem;
   letter-spacing: 0.14em;
   text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.eyebrow-lead {
   color: var(--gold-soft);
+}
+
+.section-glyphs {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0 0 0.45rem;
+  color: var(--gold-deep);
+  font-size: 0.7rem;
+}
+
+.section-glyphs.dark { color: var(--gold-deep); opacity: 0.85; }
+
+.tiny-moon {
+  width: 0.48rem;
+  height: 0.48rem;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  box-shadow: inset -0.26rem 0 0 0 currentColor;
 }
 
 .headline {
@@ -520,18 +590,19 @@ a { color: inherit; text-decoration: none; }
 
 .tear-from-cream {
   position: absolute;
-  left: 0;
-  right: 0;
-  top: -18px;
-  height: 22px;
+  left: -1px;
+  right: -1px;
+  top: -20px;
+  height: 28px;
+  z-index: 2;
   background: var(--cream-deep);
   clip-path: polygon(
-    0 40%, 2% 18%, 5% 55%, 8% 10%, 12% 48%, 16% 5%, 20% 42%, 24% 12%,
-    28% 50%, 33% 8%, 38% 45%, 43% 15%, 48% 52%, 53% 6%, 58% 40%, 63% 14%,
-    68% 48%, 73% 10%, 78% 44%, 83% 16%, 88% 50%, 93% 8%, 97% 38%, 100% 20%,
-    100% 100%, 0 100%
+    0 55%, 1.5% 22%, 4% 62%, 6.5% 12%, 10% 58%, 13% 8%, 17% 50%, 21% 18%,
+    25% 60%, 29% 10%, 34% 55%, 39% 15%, 44% 62%, 49% 6%, 54% 48%, 59% 16%,
+    64% 58%, 69% 9%, 74% 52%, 79% 20%, 84% 60%, 89% 11%, 94% 48%, 97% 22%,
+    100% 40%, 100% 100%, 0 100%
   );
-  filter: drop-shadow(0 2px 0 rgba(255, 255, 255, 0.2));
+  filter: drop-shadow(0 3px 0 rgba(255, 252, 245, 0.35));
 }
 
 .quote-mark {
@@ -569,18 +640,18 @@ a { color: inherit; text-decoration: none; }
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 0.7rem;
-  margin-bottom: 0.85rem;
+  gap: 0.85rem;
+  margin-bottom: 0.95rem;
   color: var(--gold);
-  font-size: 0.72rem;
+  font-size: 0.9rem;
 }
 
 .footer-moon {
-  width: 0.55rem;
-  height: 0.55rem;
+  width: 0.7rem;
+  height: 0.7rem;
   border-radius: 50%;
-  border: 1px solid var(--gold);
-  box-shadow: inset -0.28rem 0 0 0 var(--gold);
+  border: 1.5px solid var(--gold);
+  box-shadow: inset -0.38rem 0 0 0 var(--gold);
 }
 
 .footer-tag {
