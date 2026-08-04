@@ -16,8 +16,8 @@ npx --yes serve .
 2. In Cloudflare → Workers & Pages → Create → Connect to Git.
 3. Build settings:
    - Framework preset: None
-   - Build command: *(leave empty)*
-   - Build output directory: `/`
+   - Build command: `npm run build`
+   - Build output directory: `dist`
 4. Attach the custom domain `whatispugdoing.com`.
 
 ## Drop-in assets
