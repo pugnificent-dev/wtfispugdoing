@@ -3,3 +3,12 @@ compatibility_date = "2026-08-03"
 
 [assets]
 directory = "./dist"
+
+# Cloudflare will create DNS + certificates for these hostnames on deploy
+[[routes]]
+pattern = "whatispugdoing.com"
+custom_domain = true
+
+[[routes]]
+pattern = "www.whatispugdoing.com"
+custom_domain = true
