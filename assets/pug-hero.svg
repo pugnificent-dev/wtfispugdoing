@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="800" viewBox="0 0 640 800" role="img" aria-label="Add your portrait at assets/pug-hero.jpg">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5a3a52"/>
+      <stop offset="100%" stop-color="#2a1726"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="800" fill="url(#g)"/>
+  <circle cx="320" cy="300" r="110" fill="#c6a15a" opacity="0.25"/>
+  <text x="320" y="470" text-anchor="middle" fill="#f7f2ea" font-family="Georgia, serif" font-size="28" opacity="0.85">Add pug-hero.jpg</text>
+  <text x="320" y="510" text-anchor="middle" fill="#f7f2ea" font-family="system-ui, sans-serif" font-size="16" opacity="0.55">portrait photo goes here</text>
+</svg>
