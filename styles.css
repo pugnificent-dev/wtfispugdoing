@@ -153,8 +153,8 @@ a { color: inherit; text-decoration: none; }
 .scrap-photo {
   position: relative;
   margin: 0;
-  width: min(88%, 21rem);
-  padding: 0.6rem 0.6rem 1.35rem;
+  width: min(72%, 16.5rem);
+  padding: 0.55rem 0.55rem 1.4rem;
   background: linear-gradient(145deg, #fdfbf7, #f1ead8);
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.55) inset,
@@ -165,47 +165,29 @@ a { color: inherit; text-decoration: none; }
 
 .scrap-photo img {
   width: 100%;
-  aspect-ratio: 11 / 9;
+  aspect-ratio: 4 / 5;
+  height: auto;
   object-fit: cover;
-  object-position: 58% 40%;
-  outline: 1px solid rgba(28, 15, 26, 0.1);
-  outline-offset: 2px;
-  box-shadow: inset 0 0 0 1px rgba(28, 15, 26, 0.06);
+  object-position: center center;
+  display: block;
 }
 
 /* clear glue / double-sided tape — barely there, just adhesion */
 .glue {
-  position: absolute;
-  z-index: 2;
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: 50%;
-  background: radial-gradient(
-    circle at 35% 30%,
-    rgba(255, 255, 255, 0.55),
-    rgba(255, 255, 255, 0.12) 45%,
-    rgba(194, 159, 100, 0.08) 70%,
-    transparent 75%
-  );
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
-  pointer-events: none;
+  display: none;
 }
-
-.glue-a { top: 0.7rem; left: 0.7rem; }
-.glue-b { top: 0.7rem; right: 0.7rem; }
-.glue-c { bottom: 1.45rem; left: 50%; transform: translateX(-50%); width: 0.45rem; height: 0.45rem; opacity: 0.7; }
 
 .paperclip {
   position: absolute;
   top: -0.55rem;
-  right: 1.3rem;
+  left: 1.05rem;
   z-index: 4;
   width: 1rem;
   height: 2rem;
   border: 2.4px solid var(--gold);
   border-radius: 999px;
   background: linear-gradient(180deg, rgba(255, 230, 170, 0.4), transparent 55%);
-  transform: rotate(14deg);
+  transform: rotate(-16deg);
 }
 
 .paperclip::after {
