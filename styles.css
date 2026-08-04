@@ -10,7 +10,6 @@
   --gold-soft: #d0b070;
   --gold-deep: #a88648;
   --blush: #e8d9c8;
-  --tape: rgba(194, 159, 100, 0.5);
   --text-light: #fdfbf7;
   --text-muted: rgba(253, 251, 247, 0.78);
   --ink-muted: rgba(28, 15, 26, 0.62);
@@ -158,8 +157,9 @@ a { color: inherit; text-decoration: none; }
   padding: 0.6rem 0.6rem 1.35rem;
   background: linear-gradient(145deg, #fdfbf7, #f1ead8);
   box-shadow:
-    0 16px 34px rgba(0, 0, 0, 0.35),
-    0 1px 0 rgba(255, 255, 255, 0.45) inset;
+    0 1px 0 rgba(255, 255, 255, 0.55) inset,
+    0 14px 28px rgba(0, 0, 0, 0.28),
+    0 2px 6px rgba(0, 0, 0, 0.18);
   transform: rotate(-2.4deg);
 }
 
@@ -173,28 +173,27 @@ a { color: inherit; text-decoration: none; }
   box-shadow: inset 0 0 0 1px rgba(28, 15, 26, 0.06);
 }
 
-.washi {
+/* clear glue / double-sided tape — barely there, just adhesion */
+.glue {
   position: absolute;
-  z-index: 3;
-  height: 1.15rem;
-  background: linear-gradient(180deg, rgba(214, 188, 120, 0.72), rgba(190, 155, 85, 0.55));
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  z-index: 2;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 35% 30%,
+    rgba(255, 255, 255, 0.55),
+    rgba(255, 255, 255, 0.12) 45%,
+    rgba(194, 159, 100, 0.08) 70%,
+    transparent 75%
+  );
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+  pointer-events: none;
 }
 
-.washi-a {
-  width: 3.4rem;
-  top: -0.4rem;
-  left: 1.2rem;
-  transform: rotate(-8deg);
-}
-
-.washi-b {
-  width: 2.6rem;
-  bottom: 0.55rem;
-  right: 0.9rem;
-  transform: rotate(12deg);
-  opacity: 0.85;
-}
+.glue-a { top: 0.7rem; left: 0.7rem; }
+.glue-b { top: 0.7rem; right: 0.7rem; }
+.glue-c { bottom: 1.45rem; left: 50%; transform: translateX(-50%); width: 0.45rem; height: 0.45rem; opacity: 0.7; }
 
 .paperclip {
   position: absolute;
@@ -213,7 +212,7 @@ a { color: inherit; text-decoration: none; }
   content: "";
   position: absolute;
   inset: 3px;
-  border: 1.4px solid rgba(198, 161, 90, 0.5);
+  border: 1.4px solid rgba(194, 159, 100, 0.5);
   border-radius: inherit;
 }
 
@@ -437,30 +436,21 @@ a { color: inherit; text-decoration: none; }
   display: block;
   margin: 0 0 1.05rem;
   padding: 1.05rem 1rem 1.15rem;
-  background: rgba(255, 252, 246, 0.88);
-  border: 1px solid rgba(28, 18, 24, 0.08);
-  box-shadow: 0 10px 22px rgba(28, 18, 24, 0.08);
+  background: rgba(255, 252, 246, 0.94);
+  border: 1px solid rgba(28, 15, 26, 0.07);
+  /* pressed / glued flat — no craft-store tape */
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.65) inset,
+    0 8px 18px rgba(28, 15, 26, 0.07),
+    0 1px 3px rgba(28, 15, 26, 0.06);
 }
 
-.scrap-card.tilt-left { transform: rotate(-1.1deg); }
-.scrap-card.tilt-right { transform: rotate(1.15deg); }
+.scrap-card.tilt-left { transform: rotate(-0.8deg); }
+.scrap-card.tilt-right { transform: rotate(0.85deg); }
 .scrap-card.sticky {
   background: linear-gradient(180deg, #fff8d8, #f6e7a8);
-  border-color: rgba(169, 132, 63, 0.25);
+  border-color: rgba(168, 134, 72, 0.22);
 }
-
-.tape {
-  position: absolute;
-  top: -0.45rem;
-  width: 3rem;
-  height: 1.05rem;
-  background: var(--tape);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-}
-
-.tape-tl { left: 0.9rem; transform: rotate(-8deg); }
-.tape-tr { right: 0.9rem; left: auto; transform: rotate(9deg); }
-.tape-mid { left: 50%; transform: translateX(-50%) rotate(-2deg); width: 3.6rem; }
 
 .block-kicker {
   margin: 0 0 0.5rem;
@@ -544,10 +534,11 @@ a { color: inherit; text-decoration: none; }
   padding: 1.05rem 1.2rem 1.15rem;
   max-width: 92%;
   background:
-    radial-gradient(circle at 20% 30%, rgba(198, 161, 90, 0.1), transparent 40%),
+    radial-gradient(circle at 20% 30%, rgba(194, 159, 100, 0.08), transparent 40%),
     linear-gradient(180deg, #fffaf0, #efe4d0);
-  box-shadow: 0 10px 20px rgba(28, 18, 24, 0.12);
-  /* jagged torn-paper silhouette */
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.5) inset,
+    0 8px 16px rgba(28, 15, 26, 0.1);
   clip-path: polygon(
     0% 8%, 3% 2%, 7% 10%, 11% 1%, 16% 9%, 21% 0%, 26% 8%, 31% 2%, 36% 11%,
     42% 1%, 48% 9%, 54% 0%, 59% 10%, 65% 2%, 71% 9%, 76% 1%, 82% 8%, 88% 0%,
@@ -558,18 +549,14 @@ a { color: inherit; text-decoration: none; }
 }
 
 .ripped-scrap-a {
-  transform: rotate(-1.6deg);
+  transform: rotate(-1.2deg);
 }
 
 .ripped-scrap-b {
-  transform: rotate(1.8deg);
+  transform: rotate(1.4deg);
   background:
-    radial-gradient(circle at 70% 40%, rgba(198, 161, 90, 0.12), transparent 42%),
+    radial-gradient(circle at 70% 40%, rgba(194, 159, 100, 0.1), transparent 42%),
     linear-gradient(180deg, #f8f0df, #e8dcc4);
-}
-
-.ripped-scrap .tape {
-  top: -0.2rem;
 }
 
 .turn-page {
