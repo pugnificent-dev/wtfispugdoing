@@ -1,8 +1,11 @@
 name = "whatispugdoing"
+main = "src/worker.js"
 compatibility_date = "2026-08-03"
 
 [assets]
 directory = "./dist"
+binding = "ASSETS"
+run_worker_first = true
 
 # Cloudflare will create DNS + certificates for these hostnames on deploy
 [[routes]]
@@ -11,4 +14,8 @@ custom_domain = true
 
 [[routes]]
 pattern = "www.whatispugdoing.com"
+custom_domain = true
+
+[[routes]]
+pattern = "circuit.whatispugdoing.com"
 custom_domain = true

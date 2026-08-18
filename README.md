@@ -1,24 +1,40 @@
 # whatispugdoing.com
 
-Mobile-first landing page for Pugnificent, hosted on Cloudflare Pages from this GitHub repo.
+Mobile-first landing page for Pugnificent, hosted on Cloudflare from this GitHub repo.
+
+## Discord Activity
+
+Public URLs used by the Rainbow Circuit Discord app:
+
+- OAuth2 redirect: `https://whatispugdoing.com/discord-oauth`
+- Activity host / URL mapping `/`: `circuit.whatispugdoing.com`
+
+In the Discord Developer Portal:
+
+1. **OAuth2 → Redirects** add `https://whatispugdoing.com/discord-oauth` (and optionally `https://127.0.0.1`).
+2. Enable **Activities**.
+3. **Activities → URL Mappings**: prefix `/` → `circuit.whatispugdoing.com` (no `https://`).
+
+After you have a Client ID and Client Secret:
+
+```bash
+npx wrangler secret put DISCORD_CLIENT_ID
+npx wrangler secret put DISCORD_CLIENT_SECRET
+```
 
 ## Local preview
 
-Open `index.html` in a browser, or from this folder:
-
 ```bash
-npx --yes serve .
+npm run build
+npx wrangler dev
 ```
 
-## Cloudflare Pages
+## Deploy
 
-1. Push this repo to GitHub.
-2. In Cloudflare → Workers & Pages → Create → Connect to Git.
-3. Build settings (Workers / Pages CI):
-   - Build command: `npm run build`
-   - Deploy command: `npx wrangler deploy`
-   - Do **not** put `/` or `$` in Deploy command — those are paths, not commands
-4. After deploy → **Custom domains** → add `whatispugdoing.com`.
+```bash
+npm run deploy
+```
+
 
 ## Drop-in assets
 
