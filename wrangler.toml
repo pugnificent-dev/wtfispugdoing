@@ -7,6 +7,10 @@ directory = "./dist"
 binding = "ASSETS"
 run_worker_first = true
 
+# Public Discord application id (not the client secret).
+[vars]
+DISCORD_CLIENT_ID = "1539068321310310531"
+
 # Cloudflare will create DNS + certificates for these hostnames on deploy
 [[routes]]
 pattern = "whatispugdoing.com"
