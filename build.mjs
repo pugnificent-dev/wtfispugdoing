@@ -13,6 +13,7 @@ mkdirSync(join(dist, "assets"), { recursive: true });
 cpSync(join(root, "index.html"), join(dist, "index.html"));
 cpSync(join(root, "styles.css"), join(dist, "styles.css"));
 cpSync(join(root, "assets"), join(dist, "assets"), { recursive: true });
+cpSync(join(root, "discord-oauth.html"), join(dist, "discord-oauth.html"));
 cpSync(join(root, "discord-oauth.html"), join(dist, "discord-oauth/index.html"));
 cpSync(join(root, "circuit.html"), join(dist, "circuit/index.html"));
 

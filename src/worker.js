@@ -1,12 +1,59 @@
+const OAUTH_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Discord OAuth — whatispugdoing</title>
+  <style>
+    body { margin:0; min-height:100vh; display:grid; place-items:center; font-family:system-ui,sans-serif; background:#1a1410; color:#f4efe6; }
+    main { max-width:28rem; padding:2rem; text-align:center; }
+    p { color:#c9bfb0; line-height:1.5; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Discord authorization</h1>
+    <p>This URL is the OAuth2 redirect for the Rainbow Circuit Discord Activity. You can close this tab and launch the game from a Discord voice channel.</p>
+  </main>
+</body>
+</html>`;
+
+const CIRCUIT_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rainbow Circuit</title>
+  <style>
+    html,body { margin:0; height:100%; background:#07080d; color:#f8f9fa; font-family:system-ui,sans-serif; }
+    main { min-height:100%; display:grid; place-items:center; text-align:center; padding:2rem; }
+    p { color:#adb5bd; max-width:28rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Rainbow Circuit</h1>
+    <p>Discord Activity host is up. Set URL mapping <code>/</code> to <code>circuit.whatispugdoing.com</code> and launch from a voice channel.</p>
+  </main>
+</body>
+</html>`;
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const host = url.hostname.toLowerCase();
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
-    if (path === "/discord-oauth") {
-    const oauth = new URL("/discord-oauth/index.html", url.origin);
-    return env.ASSETS.fetch(new Request(oauth, request));
+    if (path === "/discord-oauth" || path === "/discord-oauth.html") {
+      return html(OAUTH_HTML);
+    }
+
+    if (host === "circuit.whatispugdoing.com" && (path === "/" || path === "/circuit")) {
+      return html(CIRCUIT_HTML);
+    }
+
+    if (path === "/circuit") {
+      return html(CIRCUIT_HTML);
     }
 
     if (path === "/api/health") {
@@ -21,15 +68,19 @@ export default {
       return exchangeDiscordToken(request, env);
     }
 
-    if (host === "circuit.whatispugdoing.com" || path === "/circuit" || path.startsWith("/circuit/")) {
-      if (path === "/circuit" || path === "/") {
-        return env.ASSETS.fetch(new Request(new URL("/circuit/index.html", url.origin), request));
-      }
-    }
-
     return env.ASSETS.fetch(request);
   },
 };
+
+function html(body) {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
 
 function corsHeaders() {
   return {
@@ -52,8 +103,8 @@ async function exchangeDiscordToken(request, env) {
 
   let code = "";
   try {
-    const body = await request.json();
-    code = typeof body?.code === "string" ? body.code : "";
+    const parsed = await request.json();
+    code = typeof parsed?.code === "string" ? parsed.code : "";
   } catch {
     return json({ error: "Invalid JSON" }, 400);
   }
