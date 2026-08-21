@@ -1,0 +1,14 @@
+.env
+.env.txt
+output/
+output/.bot.lock
+output/.rework-checkpoint.json
+output/.snatch-cursor.json
+output/*.prev.json
+output/sequence.json
+node_modules/
+.venv/
+google-oauth.json
+google-token.json
+google-service-account.json
+google-credentials.json
