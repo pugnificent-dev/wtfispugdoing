@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { unlink } from "node:fs/promises";
+import { mkdir, readFile, unlink } from "node:fs/promises";
+import path from "node:path";
 import {
   ApplicationCommandType,
   ChannelType,
@@ -25,9 +26,11 @@ import {
   REWORK_THREAD_ID,
   TOKEN,
   addLocalFileHashes,
+  cachePathFor,
   collectImages,
   deleteAllMessages,
   dewmarkSequenceFile,
+  ensureImagePathFor,
   ensureThread,
   fetchAllMessages,
   fetchSnatchSourceMessages,
@@ -65,6 +68,7 @@ import {
   handleReworkReactionAdd,
   reconcileReworkThreadIndex,
   syncReworkThread,
+  deleteReworkPostsForNumbers,
   snatchBlockedThreadIds,
   reconsiderRetention,
   snapshotStatusReactions,
@@ -77,6 +81,7 @@ import {
   clearLockin,
   hasLockin,
   isLockedNumber,
+  assertNumberTouchable,
   formatLockinRanges,
   deleteNumberedMessagesAndReplies,
   requestAbort,
@@ -102,6 +107,7 @@ import {
   startStatusWatchdog,
   normalizeGaps,
   removeGap,
+  ensureSequenceNumber,
   splitDiscordText,
   saveResized,
   saveSequence,
@@ -128,6 +134,8 @@ import {
   syncReconsiderNumbers,
   syncSnatchFolder,
   upsertDriveFile,
+  upsertNumberImage,
+  ensureCachedNumber,
   lockinFinalFolder,
   confirmFinalFiles,
   assertFinalUnlocked,
@@ -313,7 +321,7 @@ const commands = [
     .toJSON(),
   new SlashCommandBuilder()
     .setName("snapshot-reactions")
-    .setDescription("Save unlocked Edit per number / Reconsider reactions by image hash (skips locked numbers)")
+    .setDescription("Snapshot unlocked Edit per number (n, image hash, reactions); locked numbers ignored")
     .setDefaultMemberPermissions(manageMessages)
     .toJSON(),
   new SlashCommandBuilder()
@@ -325,6 +333,11 @@ const commands = [
         .setDescription("Also delete Rework posts whose image is no longer marked. Default: leave them.")
         .setRequired(false),
     )
+    .setDefaultMemberPermissions(manageMessages)
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("rework-notapproved")
+    .setDescription("Gap Rework :NotApproved: images — PLACEHOLDER Edit per number, drop Reconsider & Rework")
     .setDefaultMemberPermissions(manageMessages)
     .toJSON(),
   new SlashCommandBuilder()
@@ -597,18 +610,20 @@ async function clearPostReactions(message, { preserveRework = false } = {}) {
   return failed === 0;
 }
 
-function attachmentForNumber(n, sourceMessage) {
+async function attachmentForNumber(n, sourceMessage) {
   const filename = `${n}.jpg`;
-  const localPath = filePathFor(n);
-  if (existsSync(localPath)) {
-    return { attachment: localPath, name: filename };
+  try {
+    const path = await ensureImagePathFor(n);
+    return { attachment: path, name: filename };
+  } catch {
+    // fall through to Discord message
   }
 
-  const fromMessage = sourceMessage.attachments.find((file) => {
+  const fromMessage = sourceMessage?.attachments?.find((file) => {
     return file.name?.match(new RegExp(`^${n}\\.jpe?g$`, "i")) || file.contentType?.startsWith("image/");
-  }) || sourceMessage.attachments.first();
+  }) || sourceMessage?.attachments?.first();
 
-  if (!fromMessage) throw new Error(`No file found for ${n}`);
+  if (!fromMessage) throw new Error(`No Drive/cache/Discord file found for ${n}`);
   return { attachment: fromMessage.url, name: filename };
 }
 
@@ -761,7 +776,8 @@ async function runSnatchMarios(client, interaction) {
 
       const n = sequence.count + 1;
       await setJobProgress("snatchmarios", n, `saving ${n}`);
-      const dest = filePathFor(n);
+      await mkdir(path.dirname(cachePathFor(n)), { recursive: true });
+      const dest = cachePathFor(n);
       await saveResized(buffer, dest);
       const outHash = await fileSha256(dest);
       if (known.hashes.has(outHash)) {
@@ -771,7 +787,7 @@ async function runSnatchMarios(client, interaction) {
       }
 
       try {
-        await pushSnatchNumber(n);
+        await upsertNumberImage(n, dest, { role: "snatch" });
       } catch (error) {
         console.error(`Drive snatch upload ${n} failed:`, error.message || error);
       }
@@ -868,7 +884,7 @@ async function runReconsider(client, interaction) {
   const result = await rebuildReconsiderThread(client, (text) => safeEdit(interaction, text));
   const gapText = formatGapText(result.gaps, result.count, await loadLockin());
   const driveText = await syncReconsiderDrive(result.posted, (text) => safeEdit(interaction, text));
-  return `Rebuilt Reconsider with ${result.posted.length} unique image(s). Kept :noted: and untriaged Reconsider posts, plus Edit per number :NotApproved: / :noted:. Copied :noted: only — not :NotApproved: or check. :NotApproved: on a Reconsider post is not re-queued unless the lineup is still marked. PLACEHOLDER slots are gaps only.${driveText}\n${gapText}`;
+  return `Rebuilt Reconsider with ${result.posted.length} unique image(s) (${result.lineupMarked ?? 0} marked :NotApproved:/:noted: on Edit per number). Kept :noted: and untriaged Reconsider posts. Pulled missing locals from Edit per number attachments. Copied :noted: only onto Reconsider — not :NotApproved: or check. Locked numbers skipped. PLACEHOLDER slots are gaps only.${driveText}\n${gapText}`;
 }
 
 async function runReconsiderRework(client, interaction) {
@@ -961,20 +977,32 @@ async function runReplaceBulk(client, interaction) {
   }
 
   const replaced = [];
+  const failed = [];
   let needUpdate = false;
   for (const [index, job] of runnable.entries()) {
     await safeEdit(interaction, `Replacing ${job.n}.jpg (${index + 1}/${runnable.length})…`);
-    const result = await replaceNumber(client, job.n, job.url, (text) => safeEdit(interaction, text));
-    await job.reply.react("✅").catch(() => {});
-    replaced.push(job.n);
-    if (result.includes("/update-snatched")) needUpdate = true;
+    try {
+      const result = await replaceNumber(client, job.n, job.url, (text) => safeEdit(interaction, text));
+      await job.reply.react("✅").catch(() => {});
+      replaced.push(job.n);
+      if (result.includes("/update-snatched")) needUpdate = true;
+    } catch (error) {
+      console.error(`replace-bulk ${job.n} failed:`, error.message || error);
+      failed.push(`${job.n} (${error.message || error})`);
+    }
   }
 
   const sequence = await loadSequence();
+  if (replaced.length === 0 && failed.length) {
+    return `No replacements applied. Failures: ${failed.join("; ")}`;
+  }
   const list = replaced.join(", ");
   let summary = `Replaced ${replaced.length} image(s): ${list}. Sequence count stays ${sequence.count}.`;
   if (blocked.length) {
     summary += ` Skipped ${blocked.length} locked number(s) (${blocked.map((job) => job.n).join(", ")}); use /reconsider-replace for those.`;
+  }
+  if (failed.length) {
+    summary += ` Failed: ${failed.join("; ")}.`;
   }
   if (needUpdate) {
     summary += " Some Edit per number posts could not be edited in place — run /update-snatched.";
@@ -982,17 +1010,23 @@ async function runReplaceBulk(client, interaction) {
   return summary;
 }
 
-async function replaceNumber(client, n, imageUrl, onProgress) {
+async function replaceNumber(client, n, imageUrl, onProgress, { allowLocked = false } = {}) {
   const sequence = await loadSequence();
-  if (!Number.isInteger(n) || n < 1 || n > sequence.count) {
-    throw new Error(`Number must be between 1 and ${sequence.count} (current sequence count).`);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`Number must be a positive integer (got ${n}).`);
   }
+  const lockin = await loadLockin();
+  assertNumberTouchable(n, lockin, { allowLocked, via: "/reconsider-replace" });
+  // Local lineup may be empty after a wipe; grow sequence so Discord/Drive replaces still work.
+  ensureSequenceNumber(sequence, n);
 
-  await onProgress(`Replacing ${n}.jpg…`);
-  const buffer = await fetchBuffer(imageUrl);
-  await saveResized(buffer, filePathFor(n));
+  await onProgress(`Replacing ${n}.jpg on Drive…`);
+  const raw = await fetchBuffer(imageUrl);
+  await mkdir(path.dirname(cachePathFor(n)), { recursive: true });
+  await saveResized(raw, cachePathFor(n));
+  const buffer = await readFile(cachePathFor(n));
 
-  const item = sequence.items.find((entry) => entry.n === n) || sequence.items[n - 1];
+  const item = sequence.items[n - 1];
   item.n = n;
   item.source = imageUrl;
   item.attachmentId = parseAttachmentId(imageUrl);
@@ -1000,24 +1034,25 @@ async function replaceNumber(client, n, imageUrl, onProgress) {
   item.dirty = true;
   item.placeholder = false;
   item.replaced = true;
+  item.locked = isLockedNumber(n, lockin);
   sequence.items[n - 1] = item;
   removeGap(sequence, n);
   await saveSequence(sequence);
   await purgeReconsiderNumbers(client, [n]);
+
+  const role = isLockedNumber(n, lockin) ? "quality" : "snatch";
   try {
-    await pushSnatchNumber(n);
+    await upsertNumberImage(n, cachePathFor(n), { role });
   } catch (error) {
-    console.error(`Drive snatch upload ${n} failed:`, error.message || error);
+    console.error(`Drive ${role} upload ${n} failed:`, error.message || error);
   }
-  const lockin = await loadLockin();
   if (isLockedNumber(n, lockin)) {
     let finalOk = false;
     try {
-      await pushQualityNumber(n);
       const verified = await confirmFinalFiles([n]);
       finalOk = verified.confirmed.includes(n);
     } catch (error) {
-      console.error(`Drive Final upload ${n} failed:`, error.message || error);
+      console.error(`Drive Final confirm ${n} failed:`, error.message || error);
     }
     const review = await ensureThread(client, REVIEW_THREAD_ID);
     const reviewMessages = await fetchAllMessages(review);
@@ -1030,9 +1065,9 @@ async function replaceNumber(client, n, imageUrl, onProgress) {
       }
     }
     if (!finalOk) {
-      return `Replaced ${n}.jpg locally. Final confirm failed — Edit per number was not changed. Retry /reconsider-replace. Sequence count stays ${sequence.count}. Number stays locked.`;
+      return `Replaced ${n}.jpg on Drive cache. Final confirm failed — Edit per number was not changed. Retry /reconsider-replace. Sequence count stays ${sequence.count}. Number stays locked (Final only).`;
     }
-    return `Replaced ${n}.jpg locally and in Final. Sequence count stays ${sequence.count}. Number stays locked (Final only — not posted back to Edit per number).`;
+    return `Replaced ${n}.jpg in Final (Drive). Sequence count stays ${sequence.count}. Number stays locked (Final only — not posted back to Edit per number).`;
   }
 
   const review = await ensureThread(client, REVIEW_THREAD_ID);
@@ -1047,14 +1082,14 @@ async function replaceNumber(client, n, imageUrl, onProgress) {
         item.dirty = false;
         await saveSequence(sequence);
         await clearPostReactions(target.message);
-        return `Replaced ${n}.jpg. Sequence count stays ${sequence.count}. Edit per number message ${n} was updated.`;
+        return `Replaced ${n}.jpg on Drive and Edit per number. Sequence count stays ${sequence.count}.`;
       }
     } catch (error) {
       console.error(`Could not edit message ${n}:`, error.message || error);
     }
   }
 
-  return `Replaced ${n}.jpg. Sequence count stays ${sequence.count}. Run /update-snatched to refresh Edit per number.`;
+  return `Replaced ${n}.jpg on Drive. Sequence count stays ${sequence.count}. Run /update-snatched to refresh Edit per number.`;
 }
 
 async function runReconsiderWatermark(client, interaction) {
@@ -1107,9 +1142,9 @@ async function runReconsiderWatermark(client, interaction) {
       item.dirty = true;
       await saveSequence(sequence);
       try {
-        await pushSnatchNumber(n);
+        await pushSnatchNumber(n, cachePathFor(n));
         if (inReconsider.has(n)) {
-          await upsertDriveFile(DRIVE_FOLDER_RECONSIDER, `${n}.jpg`, filePathFor(n));
+          await upsertNumberImage(n, cachePathFor(n), { role: "reconsider" });
         }
       } catch (error) {
         console.error(`Drive watermark sync ${n} failed:`, error.message || error);
@@ -1141,7 +1176,7 @@ async function runReconsiderWatermark(client, interaction) {
 
   let result = `Watermark pass finished. ${updated + saved}/${numbers.length} written back in sequence. Count stays ${sequence.count}.`;
   if (updated) result += ` Updated ${updated} Edit per number post(s) in place.`;
-  if (saved) result += ` ${saved} saved locally — run /update-snatched if the gallery still shows old images.`;
+  if (saved) result += ` ${saved} saved on Drive — run /update-snatched if the gallery still shows old images.`;
   if (failed) result += ` ${failed} failed.`;
   if (skippedLocked) result += ` Skipped ${skippedLocked} locked number(s).`;
   return result;
@@ -1154,15 +1189,18 @@ function formatLockinPlan(plan) {
     lines.push(`DRY RUN — nothing was changed. Run again with confirm:true to execute.`);
   }
   lines.push(`Final Drive folder "${folder}" (${plan.folder?.id || DRIVE_FOLDER_QUALITY}).`);
-  lines.push(`This range: ${plan.from}–${plan.to} of lineup 1–${plan.count}. Sequence count continues; locked numbers stay reserved.`);
+  lines.push(`This range: ${plan.from}–${plan.to}${plan.count ? ` of lineup 1–${plan.count}` : " (Drive/Discord-backed; local sequence empty)"}. Locked numbers stay reserved.`);
   if (plan.rangesBefore && plan.rangesBefore !== "none") {
     lines.push(`Already locked: ${plan.rangesBefore}.`);
   }
   lines.push(`Locked ranges after this command: ${plan.rangesAfter || `${plan.from}–${plan.to}`}.`);
-  lines.push(`Locked images live in Final only. After confirm, matching Edit per number posts are deleted (local output/{n}.jpg files are kept).`);
+  lines.push(`Locked images live in Final only. After confirm, matching Edit per number posts are deleted (local output/{n}.jpg files are kept if present; not required).`);
   lines.push(`Gaps inside locked ranges stay at the same number. Only /reconsider-replace can fill a locked gap (uploads to Final; does not repost to Edit per number).`);
   if (plan.appendOnly !== false && !plan.reset) {
     lines.push(`Final is append-only: previously locked files are kept. This range is upserted alongside them.`);
+  }
+  if (plan.driveBacked) {
+    lines.push(`Drive-backed lockin: numbers already in Final do not need a local copy.`);
   }
   if (plan.reset) {
     lines.push(`RESET is on — Final files that are not in any locked range would be trashed.`);
@@ -1175,6 +1213,9 @@ function formatLockinPlan(plan) {
       lines.push(`Would not trash any Final files (append-only).`);
     }
     lines.push(`Would upload ${plan.upload} local image(s) from this range.`);
+    if (plan.alreadyOnFinal?.length) {
+      lines.push(`Already on Final (no local upload needed): ${plan.alreadyOnFinal.length}.`);
+    }
     if (plan.wouldTrashGapFiles) {
       lines.push(`Would remove ${plan.wouldTrashGapFiles} PLACEHOLDER file(s) from Final for locked gaps (not a Final wipe).`);
     }
@@ -1202,7 +1243,7 @@ function formatLockinPlan(plan) {
     lines.push("No PLACEHOLDER/gap slots in this range.");
   }
   if (plan.missing?.length) {
-    lines.push(`Missing local files (not uploaded, posts not deleted): ${plan.missing.join(", ")}.`);
+    lines.push(`Missing from Final and local (posts not deleted): ${plan.missing.join(", ")}.`);
   }
   if (plan.dryRun && plan.reset && plan.trashNames?.length) {
     const sample = plan.trashNames.slice(0, 25).join(", ");
@@ -1267,21 +1308,23 @@ async function runLockin(client, interaction) {
   }
 
   const sequence = await loadSequence();
-  const gapNums = [];
-  const realNums = [];
-  for (const n of presentLocked) {
-    if (await isReplaceMeNumber(sequence, n)) gapNums.push(n);
-    else realNums.push(n);
-  }
-  await safeEdit(interaction, `Confirming ${realNums.length} real image(s) in Final before deleting Edit per number posts…`);
-  const verified = realNums.length
-    ? await confirmFinalFiles(realNums)
+  // Prefer Final Drive presence. Empty local sequence would otherwise mark every
+  // number as a gap and skip Final confirmation.
+  await safeEdit(interaction, `Confirming ${presentLocked.length} Edit per number number(s) against Final…`);
+  const verified = presentLocked.length
+    ? await confirmFinalFiles(presentLocked)
     : { confirmed: [], missing: [], mismatched: [] };
-  const deletable = [...gapNums, ...verified.confirmed];
-  plan.heldBackReview = [...verified.missing, ...verified.mismatched];
+  const confirmedSet = new Set(verified.confirmed);
+  const gapNums = [];
+  for (const n of presentLocked) {
+    if (confirmedSet.has(n)) continue;
+    if (await isReplaceMeNumber(sequence, n)) gapNums.push(n);
+  }
+  const deletable = [...verified.confirmed, ...gapNums];
+  plan.heldBackReview = presentLocked.filter((n) => !deletable.includes(n));
   plan.deletedGapPosts = gapNums.length;
   if (deletable.length) {
-    await safeEdit(interaction, `Removing ${deletable.length} Edit per number post(s) after Final confirm (local files kept)…`);
+    await safeEdit(interaction, `Removing ${deletable.length} Edit per number post(s) after Final confirm (local files not required)…`);
     plan.deletedReview = await deleteNumberedMessagesAndReplies(reviewMessages, deletable);
   } else {
     plan.deletedReview = 0;
@@ -1436,9 +1479,116 @@ async function runReconsiderClear(client, interaction) {
   return result;
 }
 
+async function runReworkNotApproved(client, interaction) {
+  const rework = await ensureThread(client, REWORK_THREAD_ID);
+  await safeEdit(interaction, "Scanning Rework for :NotApproved:…");
+
+  const reworkMessages = await fetchAllMessages(rework);
+  const lockin = await loadLockin();
+  const byNumber = new Map();
+  let skippedLocked = 0;
+  let skippedUnnumbered = 0;
+
+  for (const message of reworkMessages) {
+    throwIfAborted("Rework NotApproved");
+    if (!firstImageUrl(message)) continue;
+    if (!hasNotApproved(message)) continue;
+    const n = numberFromMessage(message);
+    if (n == null) {
+      skippedUnnumbered += 1;
+      continue;
+    }
+    if (isLockedNumber(n, lockin)) {
+      skippedLocked += 1;
+      continue;
+    }
+    if (!byNumber.has(n)) byNumber.set(n, message);
+  }
+
+  const numbers = [...byNumber.keys()].sort((a, b) => a - b);
+  if (numbers.length === 0) {
+    let text = "No :NotApproved: Rework posts to gap.";
+    if (skippedLocked) text += ` Skipped ${skippedLocked} locked number(s).`;
+    if (skippedUnnumbered) text += ` Skipped ${skippedUnnumbered} unnumbered :NotApproved: post(s).`;
+    return text;
+  }
+
+  const sequence = await loadSequence();
+  ensureSequenceNumber(sequence, Math.max(...numbers, sequence.count || 0));
+  const review = await ensureThread(client, REVIEW_THREAD_ID);
+  const reviewByNumber = new Map();
+  for (const entry of numberedEntries(await fetchAllMessages(review), client.user.id)) {
+    if (!reviewByNumber.has(entry.n)) reviewByNumber.set(entry.n, entry.message);
+  }
+
+  addGaps(sequence, numbers, lockin);
+  let placeholders = 0;
+  let reviewUpdated = 0;
+  let failed = 0;
+
+  for (const [index, n] of numbers.entries()) {
+    throwIfAborted("Rework NotApproved");
+    await safeEdit(interaction, `Gapping ${n}.jpg (${index + 1}/${numbers.length})…`);
+    try {
+      const placed = await applyPlaceholderToNumber(n);
+      if (!placed) {
+        failed += 1;
+        continue;
+      }
+      placeholders += 1;
+      const item = sequence.items[n - 1];
+      if (item) {
+        item.placeholder = true;
+        item.dirty = true;
+        item.replaced = false;
+        item.locked = false;
+      }
+      const reviewMessage = reviewByNumber.get(n);
+      if (reviewMessage) {
+        const ok = await tryEditNumberedImage(reviewMessage, n);
+        if (ok) {
+          if (item) item.dirty = false;
+          await clearPostReactions(reviewMessage);
+          reviewUpdated += 1;
+        } else {
+          failed += 1;
+        }
+      }
+    } catch (error) {
+      console.error(`rework-notapproved failed for ${n}:`, error.message || error);
+      failed += 1;
+    }
+  }
+  await saveSequence(sequence);
+
+  await safeEdit(interaction, "Removing from Reconsider…");
+  const purgedReconsider = await purgeReconsiderNumbers(client, numbers);
+
+  await safeEdit(interaction, "Removing from Rework…");
+  const reworkRemoved = await deleteReworkPostsForNumbers(client, numbers, (text) => safeEdit(interaction, text));
+
+  try {
+    await deleteDriveNumbers(DRIVE_FOLDER_RECONSIDER, numbers);
+  } catch (error) {
+    console.error("Drive Reconsider delete after rework-notapproved failed:", error.message || error);
+  }
+
+  const gapText = formatGapText(normalizeGaps(sequence), sequence.count, lockin);
+  let result = `Gapped ${placeholders} number(s) from Rework :NotApproved:: ${numbers.join(", ")}.`;
+  result += ` Edit per number PLACEHOLDER updated ${reviewUpdated}.`;
+  result += ` Removed ${purgedReconsider} Reconsider post(s), ${reworkRemoved.deleted} Rework post(s).`;
+  result += ` Sequence count stays ${sequence.count}.`;
+  if (failed) result += ` ${failed} Edit per number update(s) failed — run /update-snatched.`;
+  if (skippedLocked) result += ` Skipped ${skippedLocked} locked number(s).`;
+  if (skippedUnnumbered) result += ` Skipped ${skippedUnnumbered} unnumbered :NotApproved: Rework post(s).`;
+  result += `\n${gapText}`;
+  return result;
+}
+
 async function runSnapshotReactions(client, interaction) {
   const dump = await dumpLineupReactionsByHash(client, (text) => safeEdit(interaction, text), {
     jobName: "snapshot-reactions",
+    syncSequence: true,
   });
   await mergeReactionDb(dump.byHash, { rotate: true, extra: { source: "snapshot-reactions" } });
   const stats = dump.stats || summarizeReactionDump(dump);
@@ -1451,14 +1601,14 @@ async function runSnapshotReactions(client, interaction) {
 
   const lines = [
     `Wrote output/reaction-snapshot-by-hash.json (previous copy in .prev.json) and merged output/reactions-by-hash.json.`,
-    `Sequence count: ${stats.count}.`,
-    `Locked numbers skipped (Final only, not in Edit per number): ${dump.lockedSkipped || 0}.`,
-    `Unlocked numbers: ${dump.unlockedCount ?? (stats.count - (dump.lockedSkipped || 0))}.`,
-    `Edit per number posts scanned: ${stats.reviewPosts}.`,
+    `Each unlocked Edit per number post stored as: sequence number (n), unique image hash, attachment id, reactions.`,
+    `Sequence count now ${dump.count} (Discord unlocked max ${dump.discordMax ?? "—"}, unlocked posts ${dump.discordPosts ?? review}). Locked ranges stay Final-only and are ignored by the editable sequence.`,
+    `Locked numbers (Final only, ignored by sequence): ${dump.lockedSkipped || 0} absent + ${dump.lockedPresent || 0} leftover in Edit per number.`,
+    `Unlocked posts in snapshot: ${dump.unlockedCount ?? review}.`,
     `Edit per number with a status reaction (:check: / :NotApproved: / :noted:): ${stats.reviewPosts - stats.reviewNoStatus}.`,
     `Edit per number with no status reaction: ${noStatus}.`,
     `Could not hash Edit per number attachment: ${hashFail}${stats.unhashedNumbers.length ? ` (numbers: ${stats.unhashedNumbers.join(", ")}${hashFail > stats.unhashedNumbers.length ? ", …" : ""})` : ""}.`,
-    `Distinct hashes with reactions: ${stats.hashedWithReactions}.`,
+    `Distinct image hashes with reactions: ${stats.hashedWithReactions}.`,
     `Emoji on Edit per number posts: :check: ${stats.emoji.check}, :NotApproved: ${stats.emoji.notApproved}, :noted:/repeat ${stats.emoji.repeat}.`,
     `Reconsider image posts: ${stats.reconsiderPosts} (no status: ${stats.reconsiderNoStatus}, unhashed: ${stats.reconsiderHashFailures}).`,
     `Did not compact, wipe, or change any Discord message.`,
@@ -1772,7 +1922,6 @@ async function runReconsiderPull(client, interaction) {
   const reconsider = await ensureThread(client, RECONSIDER_THREAD_ID);
   const sequence = await loadSequence();
   await safeEdit(interaction, "Pulling unique Reconsider images to Google Drive…");
-  const index = await listFolderFiles(DRIVE_FOLDER_RECONSIDER);
   const messages = sortOldestFirst(await fetchAllMessages(reconsider));
   const seenNumbers = new Set();
   const seenHashes = new Set();
@@ -1792,14 +1941,21 @@ async function runReconsiderPull(client, interaction) {
     }
 
     try {
-      const local = existsSync(filePathFor(n)) ? filePathFor(n) : null;
-      const source = local || await fetchBuffer(images[0].url);
-      const hash = local ? await fileSha256(local) : sha256(source);
+      let source = null;
+      try {
+        source = await ensureCachedNumber(n);
+      } catch {
+        source = null;
+      }
+      if (!source) {
+        source = await fetchBuffer(images[0].url);
+      }
+      const hash = typeof source === "string" ? await fileSha256(source) : sha256(source);
       if (hash === placeholderHash || seenHashes.has(hash)) {
         skipped += 1;
         continue;
       }
-      await upsertDriveFile(DRIVE_FOLDER_RECONSIDER, `${n}.jpg`, source, index);
+      await upsertNumberImage(n, source, { role: "reconsider" });
       seenNumbers.add(n);
       seenHashes.add(hash);
       saved += 1;
@@ -1853,19 +2009,22 @@ async function runQualityControlled(client, interaction) {
 
   let saved = 0;
   let failed = 0;
-  const driveIndex = await listFolderFiles(DRIVE_FOLDER_QUALITY);
   for (const [i, entry] of approved.entries()) {
     const filename = `${entry.n}.jpg`;
     await safeEdit(interaction, `Saving ${filename} (${i + 1}/${approved.length})…`);
     try {
-      const local = existsSync(filePathFor(entry.n)) ? filePathFor(entry.n) : null;
-      let source = local;
+      let source = null;
+      try {
+        source = await ensureCachedNumber(entry.n);
+      } catch {
+        source = null;
+      }
       if (!source) {
         const url = firstImageUrl(entry.message);
         if (!url) throw new Error("no image on the Edit per number post");
         source = await fetchBuffer(url);
       }
-      await upsertDriveFile(DRIVE_FOLDER_QUALITY, filename, source, driveIndex);
+      await upsertNumberImage(entry.n, source, { role: "quality" });
       saved += 1;
     } catch (error) {
       console.error(`Quality Controlled pull failed for ${entry.n}:`, error.message || error);
@@ -1924,13 +2083,16 @@ client.once("ready", async () => {
     console.log(`Sequence count: ${sequence.count}`);
     const lockin = await loadLockin();
     console.log(`Lockin ranges: ${formatLockinRanges(lockin)}`);
+    if (hasLockin(lockin)) {
+      console.log(`Locked numbers are Final-only — ignored by Edit per number sequence except /reconsider-replace`);
+    }
     const last = await loadJobProgress();
     if (last?.command || Number.isInteger(last?.number)) {
       const hint = resumeHint(last).trim();
       console.log(`Last job: ${last.command || "unknown"}${Number.isInteger(last.number) ? ` @ ${last.number}` : ""}`);
       if (hint) console.log(hint);
     }
-    console.log(driveConfigured() ? "Google Drive: signed in" : driveSetupHint());
+    console.log(driveConfigured() ? "Google Drive: signed in (image source of truth; cache under output/.drive-cache)" : driveSetupHint());
     const canManageReview = logChannelPermissions("Edit per number", review);
     const canManageReconsider = logChannelPermissions("Reconsider", reconsider);
     if (review.parent) logChannelPermissions("Edit per number parent", review.parent);
@@ -1984,7 +2146,7 @@ client.on("interactionCreate", async (interaction) => {
         const message = await interaction.channel.messages.fetch(messageId);
         const url = firstImageUrl(message);
         if (!url) throw new Error("That message has no image.");
-        const result = await replaceNumber(client, n, url, (text) => safeEdit(interaction, text));
+        const result = await replaceNumber(client, n, url, (text) => safeEdit(interaction, text), { allowLocked: true });
         await finishReply(interaction, result);
       });
       return;
@@ -2038,7 +2200,7 @@ client.on("interactionCreate", async (interaction) => {
         if (!attachment.contentType?.startsWith("image/") && !/\.(png|jpe?g|gif|webp)$/i.test(attachment.name || "")) {
           throw new Error("The attachment is not an image.");
         }
-        const result = await replaceNumber(client, n, attachment.url, (text) => safeEdit(interaction, text));
+        const result = await replaceNumber(client, n, attachment.url, (text) => safeEdit(interaction, text), { allowLocked: true });
         await safeEdit(interaction, result);
       });
       return;
@@ -2105,6 +2267,15 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
+    if (interaction.commandName === "lockin") {
+      await interaction.deferReply({ ephemeral: true });
+      await withBusy(interaction, async () => {
+        const result = await runLockin(client, interaction);
+        await replyLong(interaction, result);
+      });
+      return;
+    }
+
     if (interaction.commandName === "removebatch") {
       await interaction.deferReply({ ephemeral: true });
       await withBusy(interaction, async () => {
@@ -2139,6 +2310,15 @@ client.on("interactionCreate", async (interaction) => {
         if (prune) lines.push(`Pruned ${stats.pruned} Rework post(s) that are no longer marked.`);
         else lines.push("Unmarked source posts were left in Rework (prune:true to remove them).");
         await finishReply(interaction, lines.join(" "));
+      });
+      return;
+    }
+
+    if (interaction.commandName === "rework-notapproved") {
+      await interaction.deferReply({ ephemeral: true });
+      await withBusy(interaction, async () => {
+        const result = await runReworkNotApproved(client, interaction);
+        await replyLong(interaction, result);
       });
       return;
     }

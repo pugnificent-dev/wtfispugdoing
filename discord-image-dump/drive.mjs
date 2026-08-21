@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -8,7 +8,20 @@ import { fileURLToPath } from "node:url";
 import { exec } from "node:child_process";
 import dotenv from "dotenv";
 import { google } from "googleapis";
-import { addLockinRange, filePathFor, formatLockinRanges, hasLockin, isLockedNumber, isReplaceMeNumber, loadLockin, loadSequence, parseLockin, throwIfAborted, setJobProgress } from "./lib.mjs";
+import {
+  addLockinRange,
+  filePathFor,
+  formatLockinRanges,
+  hasLockin,
+  isLockedNumber,
+  isReplaceMeNumber,
+  loadLockin,
+  loadSequence,
+  OUTPUT_DIR,
+  parseLockin,
+  throwIfAborted,
+  setJobProgress,
+} from "./lib.mjs";
 
 dotenv.config();
 
@@ -195,6 +208,139 @@ export async function findDriveFilesByName(folderId, name) {
     q: `name = '${escapeDriveQuery(name)}' and '${escapeDriveQuery(folderId)}' in parents and trashed = false`,
     fields: "nextPageToken, files(id, name, md5Checksum, modifiedTime)",
   });
+}
+
+export function driveCacheDir() {
+  return path.join(OUTPUT_DIR, ".drive-cache");
+}
+
+export function driveCachePathFor(n) {
+  return path.join(driveCacheDir(), `${n}.jpg`);
+}
+
+/** Download file bytes from Drive. */
+export async function downloadDriveFile(fileId) {
+  requireDrive();
+  const api = await drive();
+  const res = await api.files.get(
+    { fileId, alt: "media", supportsAllDrives: true },
+    { responseType: "arraybuffer" },
+  );
+  return Buffer.from(res.data);
+}
+
+/** Exact `n.jpg` / `n.jpeg` keeper in one folder, or null. */
+export async function findNumberOnDrive(n, folderId) {
+  if (!Number.isInteger(n) || n < 1 || !folderId) return null;
+  const jpg = await findDriveFilesByName(folderId, `${n}.jpg`);
+  if (jpg.length) return pickKeeper(jpg);
+  const jpeg = await findDriveFilesByName(folderId, `${n}.jpeg`);
+  return jpeg.length ? pickKeeper(jpeg) : null;
+}
+
+export function driveFoldersForNumber(n, lockin) {
+  if (isLockedNumber(n, lockin)) {
+    return [DRIVE_FOLDER_QUALITY, DRIVE_FOLDER_SNATCH];
+  }
+  return [DRIVE_FOLDER_SNATCH, DRIVE_FOLDER_RECONSIDER];
+}
+
+/**
+ * Resolve numbered image bytes. Prefer working cache, then Drive folders, then legacy output/{n}.jpg.
+ * @returns {{ buffer: Buffer, path: string|null, folderId: string|null, fileId: string|null, source: "cache"|"drive"|"local" }}
+ */
+export async function resolveNumberImage(n, options = {}) {
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`Number must be a positive integer (got ${n}).`);
+  }
+  const cachePath = driveCachePathFor(n);
+  if (!options.skipCache && existsSync(cachePath)) {
+    return {
+      buffer: await readFile(cachePath),
+      path: cachePath,
+      folderId: null,
+      fileId: null,
+      source: "cache",
+    };
+  }
+
+  if (driveConfigured()) {
+    const lockin = options.lockin || await loadLockin();
+    const folders = options.folders || driveFoldersForNumber(n, lockin);
+    for (const folderId of folders) {
+      const file = await findNumberOnDrive(n, folderId);
+      if (!file?.id) continue;
+      const buffer = await downloadDriveFile(file.id);
+      return {
+        buffer,
+        path: null,
+        folderId,
+        fileId: file.id,
+        source: "drive",
+      };
+    }
+  }
+
+  const legacy = filePathFor(n);
+  if (existsSync(legacy)) {
+    return {
+      buffer: await readFile(legacy),
+      path: legacy,
+      folderId: null,
+      fileId: null,
+      source: "local",
+    };
+  }
+
+  throw new Error(`No Drive/cache image for ${n}.jpg`);
+}
+
+/** Ensure `output/.drive-cache/{n}.jpg` exists; download from Drive if needed. */
+export async function ensureCachedNumber(n, options = {}) {
+  const cachePath = driveCachePathFor(n);
+  await mkdir(driveCacheDir(), { recursive: true });
+  if (!options.force && existsSync(cachePath)) return cachePath;
+  const resolved = await resolveNumberImage(n, { ...options, skipCache: Boolean(options.force) });
+  if (resolved.path === cachePath && !options.force) return cachePath;
+  await writeFile(cachePath, resolved.buffer);
+  return cachePath;
+}
+
+/** True if `n.jpg` exists in the Drive folders for that number (or working cache / legacy local). */
+export async function numberExistsOnDrive(n, options = {}) {
+  if (!Number.isInteger(n) || n < 1) return false;
+  if (existsSync(driveCachePathFor(n)) || existsSync(filePathFor(n))) return true;
+  if (!driveConfigured()) return false;
+  const lockin = options.lockin || await loadLockin();
+  const folders = options.folders || driveFoldersForNumber(n, lockin);
+  for (const folderId of folders) {
+    const file = await findNumberOnDrive(n, folderId);
+    if (file?.id) return true;
+  }
+  return false;
+}
+
+/**
+ * Upsert image bytes to the correct Drive folder and refresh the working cache.
+ * role: "snatch" | "reconsider" | "quality" | undefined (auto: locked→Final, else snatch)
+ */
+export async function upsertNumberImage(n, source, { role } = {}) {
+  requireDrive();
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`Number must be a positive integer (got ${n}).`);
+  }
+  const lockin = await loadLockin();
+  let folderId = DRIVE_FOLDER_SNATCH;
+  if (role === "reconsider") folderId = DRIVE_FOLDER_RECONSIDER;
+  else if (role === "quality") folderId = DRIVE_FOLDER_QUALITY;
+  else if (role === "snatch") folderId = DRIVE_FOLDER_SNATCH;
+  else if (isLockedNumber(n, lockin)) folderId = DRIVE_FOLDER_QUALITY;
+
+  const result = await upsertDriveFile(folderId, `${n}.jpg`, source);
+  const buffer = Buffer.isBuffer(source) ? source : await readFile(source);
+  await mkdir(driveCacheDir(), { recursive: true });
+  await writeFile(driveCachePathFor(n), buffer);
+  return { result, folderId };
 }
 
 function matchesFromIndex(index, name) {
@@ -562,9 +708,11 @@ export async function syncSnatchFolder(onProgress) {
   const index = await listFolderFiles(DRIVE_FOLDER_SNATCH);
   const jobs = [];
   for (const n of keep) {
+    const cachePath = driveCachePathFor(n);
     const localPath = filePathFor(n);
-    if (!existsSync(localPath)) continue;
-    jobs.push({ name: `${n}.jpg`, localPath });
+    const source = existsSync(cachePath) ? cachePath : existsSync(localPath) ? localPath : null;
+    if (!source) continue;
+    jobs.push({ name: `${n}.jpg`, source });
   }
 
   let uploaded = 0;
@@ -574,7 +722,7 @@ export async function syncSnatchFolder(onProgress) {
     let done = 0;
     await mapPool(jobs, 4, async (job) => {
       try {
-        const result = await upsertDriveFile(DRIVE_FOLDER_SNATCH, job.name, job.localPath, index);
+        const result = await upsertDriveFile(DRIVE_FOLDER_SNATCH, job.name, job.source, index);
         if (result === "skipped") skipped += 1;
         else uploaded += 1;
       } catch (error) {
@@ -595,14 +743,16 @@ export async function syncSnatchFolder(onProgress) {
   return { uploaded, skipped, failed, total: jobs.length, pruned };
 }
 
-export async function pushSnatchNumber(n) {
+export async function pushSnatchNumber(n, source = null) {
   if (!driveConfigured()) return;
-  const localPath = filePathFor(n);
-  if (!existsSync(localPath)) return;
-  await upsertDriveFile(DRIVE_FOLDER_SNATCH, `${n}.jpg`, localPath);
+  const src = source
+    || (existsSync(driveCachePathFor(n)) ? driveCachePathFor(n) : null)
+    || (existsSync(filePathFor(n)) ? filePathFor(n) : null);
+  if (!src) return;
+  await upsertNumberImage(n, src, { role: "snatch" });
 }
 
-export async function pushQualityNumber(n) {
+export async function pushQualityNumber(n, source = null) {
   if (!driveConfigured()) return;
   const lock = await loadLockin();
   if (hasLockin(lock) && !isLockedNumber(n, lock)) {
@@ -614,9 +764,11 @@ export async function pushQualityNumber(n) {
     console.warn(`Skipping Final upload ${n}.jpg — PLACEHOLDER/gap`);
     return "gap";
   }
-  const localPath = filePathFor(n);
-  if (!existsSync(localPath)) return;
-  await upsertDriveFile(DRIVE_FOLDER_QUALITY, `${n}.jpg`, localPath);
+  const src = source
+    || (existsSync(driveCachePathFor(n)) ? driveCachePathFor(n) : null)
+    || (existsSync(filePathFor(n)) ? filePathFor(n) : null);
+  if (!src) return;
+  await upsertNumberImage(n, src, { role: "quality" });
 }
 
 export async function syncReconsiderNumbers(numbers, onProgress) {
@@ -628,10 +780,18 @@ export async function syncReconsiderNumbers(numbers, onProgress) {
   let failed = 0;
   let done = 0;
   for (const n of keep) {
-    const localPath = filePathFor(n);
-    if (!existsSync(localPath)) continue;
+    let source = existsSync(driveCachePathFor(n)) ? driveCachePathFor(n) : null;
+    if (!source && existsSync(filePathFor(n))) source = filePathFor(n);
+    if (!source && driveConfigured()) {
+      try {
+        source = await ensureCachedNumber(n);
+      } catch {
+        source = null;
+      }
+    }
+    if (!source) continue;
     try {
-      const result = await upsertDriveFile(DRIVE_FOLDER_RECONSIDER, `${n}.jpg`, localPath, index);
+      const result = await upsertDriveFile(DRIVE_FOLDER_RECONSIDER, `${n}.jpg`, source, index);
       if (result === "skipped") skipped += 1;
       else uploaded += 1;
     } catch (error) {
@@ -647,6 +807,21 @@ export async function syncReconsiderNumbers(numbers, onProgress) {
   return { uploaded, skipped, failed, pruned, total: keep.length };
 }
 
+function finalEntryForNumber(index, n) {
+  const name = `${n}.jpg`;
+  return index.get(name) || index.get(name.toLowerCase()) || null;
+}
+
+function driveFilesHaveNumber(files, n) {
+  return (files || []).some((file) => isExactNumberName(file.name, n));
+}
+
+/**
+ * Confirm numbers are present in Final.
+ * Local files are optional: if Final already has n.jpg and there is no local copy,
+ * that counts as confirmed (Drive-only lockin / delete Edit-per-number path).
+ * When a local file exists, md5 must match Final when Drive reports md5.
+ */
 export async function confirmFinalFiles(numbers) {
   requireDrive();
   const want = [...new Set((numbers || []).filter((n) => Number.isInteger(n)))].sort((a, b) => a - b);
@@ -656,19 +831,20 @@ export async function confirmFinalFiles(numbers) {
   const mismatched = [];
   for (const n of want) {
     throwIfAborted("Lock-in");
-    const name = `${n}.jpg`;
-    const entry = index.get(name) || index.get(name.toLowerCase());
+    const entry = finalEntryForNumber(index, n);
     if (!entry?.id) {
       missing.push(n);
       continue;
     }
     const localPath = filePathFor(n);
-    if (!existsSync(localPath)) {
-      missing.push(n);
+    const cachePath = driveCachePathFor(n);
+    const comparePath = existsSync(cachePath) ? cachePath : existsSync(localPath) ? localPath : null;
+    if (!comparePath) {
+      confirmed.push(n);
       continue;
     }
     if (entry.md5) {
-      const localMd5 = await md5Of(localPath);
+      const localMd5 = await md5Of(comparePath);
       if (entry.md5 !== localMd5) {
         mismatched.push(n);
         continue;
@@ -687,7 +863,10 @@ export async function lockinFinalFolder({ from, to, confirm = false, reset = fal
     throw new Error("Provide from: and to: lineup numbers.");
   }
   if (from > to) throw new Error(`from (${from}) must be <= to (${to}).`);
-  if (from < 1 || to > count) {
+  if (from < 1) throw new Error(`from (${from}) must be >= 1.`);
+  // Local lineup may be empty (Drive + Discord only). Allow lockin when count is 0;
+  // still refuse ranges past a known local count.
+  if (count > 0 && to > count) {
     throw new Error(`Range ${from}–${to} is outside the lineup 1–${count}.`);
   }
 
@@ -701,25 +880,36 @@ export async function lockinFinalFolder({ from, to, confirm = false, reset = fal
   const upload = [];
   const skippedGaps = [];
   const missing = [];
+  const alreadyOnFinal = [];
   for (let n = from; n <= to; n++) {
     throwIfAborted("Lock-in");
-    if (await isReplaceMeNumber(sequence, n)) {
+    const onFinal = driveFilesHaveNumber(existing, n);
+    // Empty local sequence marks every n as a "gap". If Final already has n.jpg,
+    // treat it as a real locked image — do not skip or trash it.
+    if (!onFinal && (await isReplaceMeNumber(sequence, n))) {
       skippedGaps.push(n);
       continue;
     }
     const localPath = filePathFor(n);
-    if (!existsSync(localPath)) {
-      missing.push(n);
+    const cachePath = driveCachePathFor(n);
+    if (!existsSync(localPath) && !existsSync(cachePath)) {
+      if (onFinal) alreadyOnFinal.push(n);
+      else missing.push(n);
       continue;
     }
-    upload.push({ n, name: `${n}.jpg`, localPath });
+    upload.push({
+      n,
+      name: `${n}.jpg`,
+      localPath: existsSync(cachePath) ? cachePath : localPath,
+    });
   }
 
   const keep = new Set();
   const lockedGapNs = new Set();
   for (const range of nextLock.ranges) {
     for (let n = range.from; n <= range.to; n++) {
-      if (await isReplaceMeNumber(sequence, n)) lockedGapNs.add(n);
+      const onFinal = driveFilesHaveNumber(existing, n);
+      if (!onFinal && (await isReplaceMeNumber(sequence, n))) lockedGapNs.add(n);
       else keep.add(n);
     }
   }
@@ -741,6 +931,7 @@ export async function lockinFinalFolder({ from, to, confirm = false, reset = fal
     count,
     reset,
     appendOnly: !reset,
+    driveBacked: count === 0 || alreadyOnFinal.length > 0,
     rangesAfter: formatLockinRanges(nextLock),
     rangesBefore: formatLockinRanges(current),
     existing: existing.length,
@@ -751,6 +942,7 @@ export async function lockinFinalFolder({ from, to, confirm = false, reset = fal
     gapFileNames: gapFiles.map((file) => file.name),
     wouldKeep: existing.length - toTrash.length,
     upload: upload.length,
+    alreadyOnFinal,
     skippedGaps,
     missing,
     dryRun: !confirm,
@@ -842,10 +1034,16 @@ export async function lockinFinalFolder({ from, to, confirm = false, reset = fal
   }
 
   await onProgress("Confirming this range is present in Final…");
-  const verified = await confirmFinalFiles(upload.map((job) => job.n));
+  // Confirm every real number in the range (local uploads + already on Final).
+  const toVerify = [
+    ...upload.map((job) => job.n),
+    ...alreadyOnFinal,
+  ];
+  const verified = await confirmFinalFiles(toVerify);
 
   await addLockinRange(from, to, {
     uploaded: uploaded + already,
+    alreadyOnFinal: alreadyOnFinal.length,
     skippedGaps,
     missing,
     confirmed: verified.confirmed,
@@ -857,7 +1055,7 @@ export async function lockinFinalFolder({ from, to, confirm = false, reset = fal
     trashed,
     trashFailed,
     uploaded,
-    already,
+    already: already + alreadyOnFinal.length,
     failed,
     pruned,
     gapTrashed,

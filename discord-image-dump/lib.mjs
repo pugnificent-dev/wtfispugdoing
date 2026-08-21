@@ -71,6 +71,9 @@ export function resumeHint(progress = jobProgress) {
   if (command === "rework-sync") {
     return " Stopped /rework-sync. Already-forwarded hashes stay in the Rework thread. Re-run /rework-sync to continue.";
   }
+  if (command === "rework-notapproved") {
+    return " Stopped /rework-notapproved. Already-gapped numbers stay PLACEHOLDER. Re-run to continue remaining :NotApproved: Rework posts.";
+  }
   if (command === "lockin") {
     return " Stopped /lockin. Final may be partially cleared or uploaded. Re-run /lockin from: to: confirm:true to finish.";
   }
@@ -311,6 +314,15 @@ export function hasLockin(lockin) {
 export function isLockedNumber(n, lockin) {
   if (!Number.isInteger(n) || !hasLockin(lockin)) return false;
   return lockin.ranges.some((range) => n >= range.from && n <= range.to);
+}
+
+/** Locked numbers are Final-only — forbidden for normal sequence ops unless allowLocked (reconsider-replace). */
+export function assertNumberTouchable(n, lockin, { allowLocked = false, via = "/reconsider-replace" } = {}) {
+  if (!isLockedNumber(n, lockin)) return;
+  if (allowLocked) return;
+  throw new Error(
+    `${n} is locked by /lockin (${formatLockinRanges(lockin)}). Locked numbers are ignored by the Edit per number sequence and can only be changed with ${via}.`,
+  );
 }
 
 export function maxLockedNumber(lockin) {
@@ -795,6 +807,37 @@ export function filePathFor(n) {
   return path.join(OUTPUT_DIR, `${n}.jpg`);
 }
 
+/** Working cache path (Drive downloads). Prefer this over permanent lineup files. */
+export function cachePathFor(n) {
+  return path.join(OUTPUT_DIR, ".drive-cache", `${n}.jpg`);
+}
+
+function existingImagePath(n) {
+  if (!Number.isInteger(n)) return null;
+  if (existsSync(cachePathFor(n))) return cachePathFor(n);
+  if (existsSync(filePathFor(n))) return filePathFor(n);
+  return null;
+}
+
+async function driveApi() {
+  return import("./drive.mjs");
+}
+
+/** Resolve a path usable for Discord/sharp: Drive cache (download if needed), else legacy local. */
+export async function ensureImagePathFor(n) {
+  const cache = cachePathFor(n);
+  if (existsSync(cache)) return cache;
+  try {
+    const { ensureCachedNumber, driveConfigured } = await driveApi();
+    if (driveConfigured()) return ensureCachedNumber(n);
+  } catch (error) {
+    if (!existsSync(filePathFor(n))) throw error;
+  }
+  const legacy = filePathFor(n);
+  if (existsSync(legacy)) return legacy;
+  throw new Error(`No Drive/cache image for ${n}.jpg`);
+}
+
 export async function deleteLocalFilesAfter(count) {
   if (!existsSync(OUTPUT_DIR)) return 0;
   const names = await readdir(OUTPUT_DIR);
@@ -867,7 +910,15 @@ export async function applyPlaceholderToNumber(n) {
     return false;
   }
   const src = await ensurePlaceholderFile();
-  await copyFile(src, filePathFor(n));
+  const buffer = await readFile(src);
+  await mkdir(path.join(OUTPUT_DIR, ".drive-cache"), { recursive: true });
+  await writeFile(cachePathFor(n), buffer);
+  try {
+    const { upsertNumberImage, driveConfigured } = await driveApi();
+    if (driveConfigured()) await upsertNumberImage(n, buffer, { role: "snatch" });
+  } catch (error) {
+    console.error(`Drive PLACEHOLDER upload ${n} failed:`, error.message || error);
+  }
   return true;
 }
 
@@ -906,15 +957,25 @@ export function runWatermarkRemoval(inputPath, outputPath) {
 }
 
 export async function dewmarkSequenceFile(n) {
-  const input = filePathFor(n);
-  if (!existsSync(input)) {
-    throw new Error(`Missing ${n}.jpg`);
-  }
+  const input = await ensureImagePathFor(n);
   const tmp = path.join(OUTPUT_DIR, `.wm-${n}.jpg`);
   await runWatermarkRemoval(input, tmp);
-  await copyFile(tmp, input);
+  const buffer = await readFile(tmp);
+  await mkdir(path.join(OUTPUT_DIR, ".drive-cache"), { recursive: true });
+  await writeFile(cachePathFor(n), buffer);
   await unlink(tmp).catch(() => {});
-  return readFile(input);
+  try {
+    const { upsertNumberImage, driveConfigured } = await driveApi();
+    if (driveConfigured()) {
+      const lockin = await loadLockin();
+      await upsertNumberImage(n, buffer, {
+        role: isLockedNumber(n, lockin) ? "quality" : "snatch",
+      });
+    }
+  } catch (error) {
+    console.error(`Drive watermark upload ${n} failed:`, error.message || error);
+  }
+  return buffer;
 }
 
 export function sha256(buffer) {
@@ -1219,7 +1280,28 @@ function emptyItem(n, extra = {}) {
     dirty: extra.dirty ?? false,
     placeholder: extra.placeholder ?? false,
     replaced: extra.replaced ?? false,
+    locked: extra.locked ?? false,
   };
+}
+
+export { emptyItem };
+
+/** Grow an empty/partial local sequence so number n is addressable. */
+export function ensureSequenceNumber(sequence, n) {
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`Number must be a positive integer (got ${n}).`);
+  }
+  if (!sequence.items) sequence.items = [];
+  if (!sequence.gaps) sequence.gaps = [];
+  while (sequence.items.length < n) {
+    sequence.items.push(emptyItem(sequence.items.length + 1));
+  }
+  for (let i = 0; i < sequence.items.length; i++) {
+    if (!sequence.items[i]) sequence.items[i] = emptyItem(i + 1);
+    else sequence.items[i].n = i + 1;
+  }
+  sequence.count = Math.max(Number(sequence.count) || 0, n, sequence.items.length);
+  return sequence;
 }
 
 export async function loadSequence() {
@@ -1335,9 +1417,11 @@ export function knownKeys(sequence) {
 
 export async function addLocalFileHashes(hashes, count) {
   for (let n = 1; n <= count; n++) {
-    const localPath = filePathFor(n);
-    if (!existsSync(localPath)) continue;
-    hashes.add(sha256(await readFile(localPath)));
+    for (const localPath of [cachePathFor(n), filePathFor(n)]) {
+      if (!existsSync(localPath)) continue;
+      hashes.add(sha256(await readFile(localPath)));
+      break;
+    }
   }
   return hashes;
 }
@@ -1359,9 +1443,19 @@ export async function isReplaceMeNumber(sequence, n) {
   const count = Number(sequence.count) || 0;
   if (!Number.isInteger(n) || n < 1 || n > count) return true;
   if (normalizeGaps(sequence).includes(n) || sequence.items[n - 1]?.placeholder) return true;
-  const localPath = filePathFor(n);
-  if (!existsSync(localPath)) return true;
-  return (await fileSha256(localPath)) === (await getPlaceholderHash());
+
+  for (const localPath of [cachePathFor(n), filePathFor(n)]) {
+    if (!existsSync(localPath)) continue;
+    return (await fileSha256(localPath)) === (await getPlaceholderHash());
+  }
+
+  try {
+    const { numberExistsOnDrive, driveConfigured } = await driveApi();
+    if (driveConfigured() && (await numberExistsOnDrive(n))) return false;
+  } catch {
+    // Drive unavailable — fall through
+  }
+  return true;
 }
 
 const REWORK_PACK_FILE = path.join(OUTPUT_DIR, ".rework-pack.json");
@@ -1379,17 +1473,37 @@ async function applyCompactedFiles(keepers, oldCount, newCount, tmpDir, onProgre
   const maxLocked = Number(extra.maxLocked) || 0;
   const frozenGaps = [...new Set((extra.frozenGaps || []).map(Number))].filter((n) => n >= 1 && n <= maxLocked);
   await setJobProgress("reworkcount", newCount, `Swapping packed images 0/${newCount}`);
+  await mkdir(path.join(OUTPUT_DIR, ".drive-cache"), { recursive: true });
+  let driveUpsert = null;
+  try {
+    const drive = await driveApi();
+    if (drive.driveConfigured()) driveUpsert = drive.upsertNumberImage;
+  } catch {
+    driveUpsert = null;
+  }
   for (let n = 1; n <= newCount; n++) {
     throwIfAborted("Rework packing");
-    await copyFile(path.join(tmpDir, `${n}.jpg`), filePathFor(n));
+    const packed = path.join(tmpDir, `${n}.jpg`);
+    await copyFile(packed, cachePathFor(n));
+    if (driveUpsert) {
+      try {
+        const lockin = await loadLockin();
+        await driveUpsert(n, packed, {
+          role: isLockedNumber(n, lockin) ? "quality" : "snatch",
+        });
+      } catch (error) {
+        console.error(`Drive rework upsert ${n} failed:`, error.message || error);
+      }
+    }
     if (n === 1 || n === newCount || n % 25 === 0) {
       await setJobProgress("reworkcount", n, `Swapping packed images ${n}/${newCount}`);
       await onProgress(`Swapping packed images ${n}/${newCount}`);
     }
   }
   for (let n = newCount + 1; n <= oldCount; n++) {
-    const leftover = filePathFor(n);
-    if (existsSync(leftover)) await unlink(leftover);
+    for (const leftover of [filePathFor(n), cachePathFor(n)]) {
+      if (existsSync(leftover)) await unlink(leftover);
+    }
   }
 
   const oldItems = sequence.items;
@@ -1501,8 +1615,18 @@ export async function compactSequence(onProgress = async () => {}) {
   for (let i = 0; i < keepers.length; i++) {
     throwIfAborted("Rework packing");
     const newN = i + 1;
-    const src = existsSync(filePathFor(keepers[i])) ? filePathFor(keepers[i]) : placeholderPath();
-    await copyFile(src, path.join(tmpDir, `${newN}.jpg`));
+    const dest = path.join(tmpDir, `${newN}.jpg`);
+    let packed = false;
+    try {
+      const src = await ensureImagePathFor(keepers[i]);
+      await copyFile(src, dest);
+      packed = true;
+    } catch {
+      // fall through to PLACEHOLDER
+    }
+    if (!packed) {
+      await copyFile(placeholderPath(), dest);
+    }
     if (newN % 25 === 0 || newN === newCount) {
       await setJobProgress("reworkcount", newN, `Packing kept images ${newN}/${newCount}`);
       await onProgress(`Packing kept images ${newN}/${newCount}`);
@@ -1924,6 +2048,40 @@ export async function syncReworkThread(client, { prune = false, onProgress = asy
   });
 }
 
+/** Delete Rework posts for the given lineup numbers and drop them from the hash index. */
+export async function deleteReworkPostsForNumbers(client, numbers, onProgress = async () => {}) {
+  const want = new Set([...numbers].filter((n) => Number.isInteger(n)));
+  if (want.size === 0) return { deleted: 0, numbers: [] };
+  const thread = await ensureThread(client, REWORK_THREAD_ID);
+  return withReworkLock(async () => {
+    const messages = await fetchAllMessages(thread);
+    const deletedIds = new Set();
+    const hitNumbers = new Set();
+    for (const message of messages) {
+      throwIfAborted("Rework NotApproved");
+      if (isStatusEmbedMessage(message)) continue;
+      const n = numberFromMessage(message);
+      if (n == null || !want.has(n)) continue;
+      try {
+        await message.delete();
+        deletedIds.add(message.id);
+        hitNumbers.add(n);
+      } catch (error) {
+        console.error(`Could not delete Rework post ${message.id}:`, error.message || error);
+      }
+    }
+    const index = await loadReworkThreadIndex();
+    for (const [hash, entry] of Object.entries(index.byHash || {})) {
+      if (deletedIds.has(String(entry?.messageId)) || want.has(entry?.n)) {
+        delete index.byHash[hash];
+      }
+    }
+    await saveReworkThreadIndex(index);
+    await onProgress(`Removed ${deletedIds.size} Rework post(s)`);
+    return { deleted: deletedIds.size, numbers: [...hitNumbers].sort((a, b) => a - b) };
+  });
+}
+
 export async function resolveReworkEmoji(guild) {
   if (!guild) {
     console.warn(`WARNING: no guild available to resolve :${REWORK_NAME}:. Falling back to 🔁.`);
@@ -2199,6 +2357,45 @@ export function summarizeReactionDump(payload) {
   };
 }
 
+/** Grow/update local sequence metadata from unlocked Edit per number rows only. Locked slots stay Final-only. */
+export async function syncSequenceFromEditSnapshot(rows, lockin = null) {
+  const sequence = await loadSequence();
+  const unlockedRows = (rows || []).filter(
+    (row) => Number.isInteger(row.n) && row.n >= 1 && !isLockedNumber(row.n, lockin),
+  );
+  const numbers = unlockedRows.map((row) => row.n);
+  let maxN = numbers.length ? Math.max(...numbers) : 0;
+  // Keep high-water count so numbering continues past locked ranges, but do not treat locked slots as editable.
+  const lockMax = maxLockedNumber(lockin);
+  if (lockMax > maxN) maxN = lockMax;
+  if (maxN < 1) return sequence;
+
+  ensureSequenceNumber(sequence, maxN);
+  for (let i = 0; i < sequence.items.length; i++) {
+    const n = i + 1;
+    const item = sequence.items[i];
+    if (!item) continue;
+    if (isLockedNumber(n, lockin)) {
+      item.locked = true;
+      // Locked = Final only; drop Edit per number message linkage from sequence inventory.
+      delete item.messageId;
+      continue;
+    }
+    item.locked = false;
+  }
+  for (const row of unlockedRows) {
+    const item = sequence.items[row.n - 1];
+    if (!item) continue;
+    item.locked = false;
+    if (row.discordHash || row.imageHash) item.sha256 = row.discordHash || row.imageHash;
+    if (row.source) item.source = row.source;
+    if (row.attachmentId) item.attachmentId = String(row.attachmentId);
+    if (row.messageId) item.messageId = String(row.messageId);
+  }
+  await saveSequence(sequence);
+  return sequence;
+}
+
 export async function dumpLineupReactionsByHash(client, onProgress = async () => {}, options = {}) {
   const sequence = await loadSequence();
   const review = await ensureThread(client, REVIEW_THREAD_ID);
@@ -2206,37 +2403,45 @@ export async function dumpLineupReactionsByHash(client, onProgress = async () =>
   const rotate = options.rotate !== false && dest === REACTION_SNAP_FILE;
   const jobName = options.jobName || getJobProgress()?.command || "snapshot-reactions";
   await setJobProgress(jobName, 1, "snapshot reactions");
-  await onProgress("Snapshotting Edit per number reactions by attachment hash…");
+  await onProgress("Snapshotting unlocked Edit per number posts (number, image hash, reactions)…");
   const reviewEntries = numberedEntries(await fetchAllMessages(review), client.user.id);
   const lockin = await loadLockin();
-  let lockedSkipped = 0;
-  let unlockedCount = 0;
-  for (let n = 1; n <= sequence.count; n++) {
-    if (isLockedNumber(n, lockin)) lockedSkipped += 1;
-    else unlockedCount += 1;
-  }
 
   const rows = [];
   const byHash = {};
+  const byNumber = {};
   let postsWithReactions = 0;
+  let lockedPresent = 0;
   for (let i = 0; i < reviewEntries.length; i++) {
     throwIfAborted("Reaction snapshot");
     const { message, n } = reviewEntries[i];
-    if (isLockedNumber(n, lockin)) continue;
+    // Locked numbers are Final-only — ignored by the editable sequence (leftovers are counted, not inventoried).
+    if (isLockedNumber(n, lockin)) {
+      lockedPresent += 1;
+      continue;
+    }
     const reactions = snapshotStatusReactions(message);
     if (reactions.length) postsWithReactions += 1;
+    const imageUrl = firstImageUrl(message);
     const discordHash = await hashMessageImage(message);
-    const localPath = Number.isInteger(n) ? filePathFor(n) : null;
+    const localPath = Number.isInteger(n) ? (existsSync(cachePathFor(n)) ? cachePathFor(n) : filePathFor(n)) : null;
     const localHash = localPath && existsSync(localPath) ? await fileSha256(localPath) : null;
     const hashMatch = Boolean(discordHash && localHash && discordHash === localHash);
-    rows.push({
+    const attachmentId = parseAttachmentId(imageUrl);
+    const row = {
       n,
-      messageId: message?.id || null,
+      imageHash: discordHash,
       discordHash,
+      attachmentId,
+      messageId: message?.id || null,
+      source: imageUrl || null,
       localHash,
       hashMatch,
+      locked: false,
       reactions: reactionSnapPayload(reactions),
-    });
+    };
+    rows.push(row);
+    if (Number.isInteger(n)) byNumber[String(n)] = row;
     addSnapsForHash(byHash, discordHash, reactions);
     if (hashMatch) addSnapsForHash(byHash, localHash, reactions);
     if (i === 0 || i + 1 === reviewEntries.length || (i + 1) % 25 === 0) {
@@ -2255,17 +2460,27 @@ export async function dumpLineupReactionsByHash(client, onProgress = async () =>
       const message = reconsiderMessages[i];
       if (!firstImageUrl(message)) continue;
       const n = numberFromMessage(message);
+      // Locked numbers stay out of sequence inventory (reconsider-replace only).
+      if (isLockedNumber(n, lockin)) continue;
       const reactions = snapshotStatusReactions(message);
       if (reactions.length) postsWithReactions += 1;
+      const imageUrl = firstImageUrl(message);
       const discordHash = await hashMessageImage(message);
-      const localHash = Number.isInteger(n) && existsSync(filePathFor(n)) ? await fileSha256(filePathFor(n)) : null;
+      const localPath = Number.isInteger(n)
+        ? (existsSync(cachePathFor(n)) ? cachePathFor(n) : filePathFor(n))
+        : null;
+      const localHash = localPath && existsSync(localPath) ? await fileSha256(localPath) : null;
       const hashMatch = Boolean(discordHash && localHash && discordHash === localHash);
       reconsiderRows.push({
         n,
-        messageId: message.id,
+        imageHash: discordHash,
         discordHash,
+        attachmentId: parseAttachmentId(imageUrl),
+        messageId: message.id,
+        source: imageUrl || null,
         localHash,
         hashMatch,
+        locked: false,
         reactions: reactionSnapPayload(reactions),
       });
       addSnapsForHash(byHash, discordHash, reactions);
@@ -2277,16 +2492,40 @@ export async function dumpLineupReactionsByHash(client, onProgress = async () =>
     }
   }
 
+  let lockedSkipped = 0;
+  for (const range of lockin?.ranges || []) {
+    const from = Number(range?.from);
+    const to = Number(range?.to);
+    if (!Number.isInteger(from) || !Number.isInteger(to)) continue;
+    for (let n = from; n <= to; n++) lockedSkipped += 1;
+  }
+  // Subtract leftovers still sitting in Edit per number from the "absent/Final-only" count.
+  lockedSkipped = Math.max(0, lockedSkipped - lockedPresent);
+  const unlockedCount = rows.length;
+  const discordNumbers = rows.map((row) => row.n).filter((n) => Number.isInteger(n));
+  const discordMax = discordNumbers.length ? Math.max(...discordNumbers) : 0;
+  const lockinMax = maxLockedNumber(lockin);
+  const count = Math.max(Number(sequence.count) || 0, discordMax, lockinMax);
+
+  if (options.syncSequence !== false) {
+    await onProgress(`Updating local sequence from unlocked Edit per number only (count → ${count}; locked ignored)…`);
+    await syncSequenceFromEditSnapshot(rows, lockin);
+  }
+
   const payload = {
     at: new Date().toISOString(),
-    count: sequence.count,
+    count,
+    discordMax,
+    discordPosts: rows.length,
     unlockedCount,
     lockedSkipped,
+    lockedPresent,
     reviewPosts: rows.length,
     reviewNumbers: rows.filter((row) => row.messageId).length,
     reconsiderPosts: reconsiderRows.length,
     postsWithReactions,
     hashedWithReactions: Object.keys(byHash).length,
+    byNumber,
     byHash: Object.fromEntries(
       Object.entries(byHash).map(([hash, snaps]) => [hash, reactionSnapPayload(snaps)]),
     ),
@@ -2303,7 +2542,7 @@ export async function dumpLineupReactionsByHash(client, onProgress = async () =>
   }
   payload.hashedWithReactions = Object.keys(onDisk.byHash || {}).length;
   payload.stats = summarizeReactionDump(payload);
-  await onProgress(`Wrote ${dest} (${payload.hashedWithReactions} hashes with reactions)`);
+  await onProgress(`Wrote ${dest} (${payload.discordPosts} unlocked posts, count ${payload.count}, ${payload.hashedWithReactions} hashes)`);
   return payload;
 }
 
@@ -2337,8 +2576,13 @@ export async function restoreLineupReactionsByHash(client, snapshot, onProgress 
       continue;
     }
     const message = byNumber.get(n);
-    const localPath = filePathFor(n);
-    if (!message || !existsSync(localPath)) {
+    let localPath = null;
+    try {
+      localPath = await ensureImagePathFor(n);
+    } catch {
+      localPath = null;
+    }
+    if (!message || !localPath) {
       skipped += 1;
       continue;
     }
@@ -2364,9 +2608,20 @@ export async function rebuildReconsiderThread(client, onProgress = async () => {
   const reworkHashes = new Set();
   const repeatHashes = new Set();
   const rejectedHashes = new Set();
+  const lineupHashes = new Set();
+  /** @type {Map<string, { n: number, url?: string|null, path?: string|null, repeat: boolean }>} */
+  const sourceByHash = new Map();
   const snapsByHash = new Map();
   const placeholderHash = await getPlaceholderHash();
 
+  const rememberSource = (hash, entry) => {
+    if (!hash || hash === placeholderHash) return;
+    const prev = sourceByHash.get(hash);
+    // Prefer Edit per number (lineup) number/url when both exist.
+    if (!prev || (entry.fromLineup && !prev.fromLineup) || (entry.n != null && (prev.n == null || entry.n < prev.n))) {
+      sourceByHash.set(hash, entry);
+    }
+  };
   const addReworkHash = (hash, { repeat = false } = {}) => {
     if (!hash || hash === placeholderHash) return;
     reworkHashes.add(hash);
@@ -2386,15 +2641,18 @@ export async function rebuildReconsiderThread(client, onProgress = async () => {
     if (isLockedNumber(n, lockin)) continue;
     const retention = reconsiderRetention(message);
     const discordHash = await hashMessageImage(message);
-    const localPath = Number.isInteger(n) ? filePathFor(n) : null;
-    const localHash = localPath && existsSync(localPath) ? await fileSha256(localPath) : null;
+    const imageUrl = firstImageUrl(message);
+    const localPath = existingImagePath(n);
+    const localHash = localPath ? await fileSha256(localPath) : null;
     if (retention === "rejected") {
       addRejectedHash(discordHash);
       addRejectedHash(localHash);
-    } else {
+    } else if (retention !== "approved") {
       const repeat = retention === "repeat";
       addReworkHash(discordHash, { repeat });
       addReworkHash(localHash, { repeat });
+      rememberSource(discordHash, { n, url: imageUrl, path: localPath, repeat, fromLineup: false });
+      if (localHash) rememberSource(localHash, { n, url: imageUrl, path: localPath, repeat, fromLineup: false });
     }
     if (i === 0 || i + 1 === reconsiderEntries.length || (i + 1) % 25 === 0) {
       await onProgress(`Checked Reconsider queue ${i + 1}/${reconsiderEntries.length}`);
@@ -2402,57 +2660,136 @@ export async function rebuildReconsiderThread(client, onProgress = async () => {
   }
 
   const reviewEntries = numberedEntries(await fetchAllMessages(review), client.user.id);
+  let lineupMarked = 0;
   for (let i = 0; i < reviewEntries.length; i++) {
     const { message, n } = reviewEntries[i];
     throwIfAborted("Reconsider rebuild");
     if (isLockedNumber(n, lockin)) continue;
     if (needsReworkReaction(message)) {
+      lineupMarked += 1;
+      const imageUrl = firstImageUrl(message);
       const discordHash = await hashMessageImage(message);
-      const localPath = Number.isInteger(n) ? filePathFor(n) : null;
-      const localHash = localPath && existsSync(localPath) ? await fileSha256(localPath) : null;
+      const localPath = existingImagePath(n);
+      const localHash = localPath ? await fileSha256(localPath) : null;
+      const repeat = hasReworkReaction(message);
       if (discordHash) {
+        lineupHashes.add(discordHash);
         snapsByHash.set(discordHash, mergeReactionSnapshots(snapsByHash.get(discordHash) || [], snapshotStatusReactions(message)));
       }
-      addReworkHash(discordHash, { repeat: hasRepeatReaction(message) });
-      addReworkHash(localHash, { repeat: hasRepeatReaction(message) });
+      if (localHash) lineupHashes.add(localHash);
+      addReworkHash(discordHash, { repeat });
+      addReworkHash(localHash, { repeat });
+      rememberSource(discordHash, {
+        n,
+        url: imageUrl,
+        path: localPath,
+        repeat,
+        fromLineup: true,
+      });
+      if (localHash) {
+        rememberSource(localHash, {
+          n,
+          url: imageUrl,
+          path: localPath,
+          repeat,
+          fromLineup: true,
+        });
+      }
     }
     if (i === 0 || i + 1 === reviewEntries.length || (i + 1) % 25 === 0) {
       await onProgress(`Checked lineup ${i + 1}/${reviewEntries.length}`);
     }
   }
 
+  // Drop Reconsider-only :NotApproved: hashes, but keep anything still marked on Edit per number.
   for (const hash of rejectedHashes) {
-    if (repeatHashes.has(hash)) continue;
+    if (repeatHashes.has(hash) || lineupHashes.has(hash)) continue;
     reworkHashes.delete(hash);
+    sourceByHash.delete(hash);
+  }
+
+  // Fill any rework hash that only exists as a cache/local/Drive file (no Discord source remembered).
+  for (let n = 1; n <= sequence.count; n++) {
+    if (isLockedNumber(n, lockin)) continue;
+    let localPath = existingImagePath(n);
+    if (!localPath) {
+      try {
+        localPath = await ensureImagePathFor(n);
+      } catch {
+        continue;
+      }
+    }
+    const hash = await fileSha256(localPath);
+    if (!reworkHashes.has(hash) || hash === placeholderHash) continue;
+    rememberSource(hash, { n, url: null, path: localPath, repeat: repeatHashes.has(hash), fromLineup: false });
   }
 
   await persistReactionHashMap(snapsByHash, { source: "reconsider-rebuild-lineup" });
-  await onProgress("Rebuilding Reconsider (keeps :noted: and blank; copies :noted: only, no NotApproved)…");
+  await onProgress(
+    `Rebuilding Reconsider from ${reworkHashes.size} unique image(s) (${lineupMarked} Edit per number :NotApproved:/:noted:)…`,
+  );
   await deleteAllMessages(reconsider, { skipIds: statusSkipIds() });
 
   const posted = [];
   const seenHash = new Set();
-  for (let n = 1; n <= sequence.count; n++) {
+  const jobs = [...reworkHashes]
+    .map((hash) => ({ hash, source: sourceByHash.get(hash) }))
+    .filter((job) => job.source && Number.isInteger(job.source.n))
+    .sort((a, b) => a.source.n - b.source.n);
+
+  for (const job of jobs) {
     throwIfAborted("Reconsider rebuild");
-    if (isLockedNumber(n, lockin)) continue;
-    const localPath = filePathFor(n);
-    if (!existsSync(localPath)) continue;
-    const hash = await fileSha256(localPath);
-    if (hash === placeholderHash || seenHash.has(hash) || !reworkHashes.has(hash)) continue;
+    const { hash, source } = job;
+    if (seenHash.has(hash)) continue;
+    if (isLockedNumber(source.n, lockin)) continue;
+
+    let filePath = source.path && existsSync(source.path) ? source.path : null;
+    if (!filePath) {
+      try {
+        filePath = await ensureImagePathFor(source.n);
+      } catch {
+        filePath = null;
+      }
+    }
+    if (!filePath && source.url) {
+      try {
+        const buffer = await fetchBuffer(source.url);
+        await mkdir(path.join(OUTPUT_DIR, ".drive-cache"), { recursive: true });
+        await saveResized(buffer, cachePathFor(source.n));
+        filePath = cachePathFor(source.n);
+        try {
+          const { upsertNumberImage, driveConfigured } = await driveApi();
+          if (driveConfigured()) {
+            await upsertNumberImage(source.n, filePath, { role: "reconsider" });
+          }
+        } catch (error) {
+          console.error(`Drive reconsider cache ${source.n} failed:`, error.message || error);
+        }
+      } catch (error) {
+        console.error(`Could not pull Edit per number ${source.n} for Reconsider:`, error.message || error);
+        continue;
+      }
+    }
+    if (!filePath || !existsSync(filePath)) continue;
+
+    const postedHash = await fileSha256(filePath);
+    if (postedHash === placeholderHash || seenHash.has(postedHash)) continue;
+    seenHash.add(postedHash);
     seenHash.add(hash);
+
     const postedMessage = await reconsider.send({
-      content: String(n),
-      files: [new AttachmentBuilder(localPath, { name: `${n}.jpg` })],
+      content: String(source.n),
+      files: [new AttachmentBuilder(filePath, { name: `${source.n}.jpg` })],
     });
-    if (repeatHashes.has(hash)) {
+    if (source.repeat || repeatHashes.has(hash) || repeatHashes.has(postedHash)) {
       try {
         await addReworkReaction(postedMessage);
       } catch (error) {
-        console.error(`Could not add :${REWORK_NAME}: on Reconsider ${n}:`, error.message || error);
+        console.error(`Could not add :${REWORK_NAME}: on Reconsider ${source.n}:`, error.message || error);
       }
     }
-    posted.push(n);
-    await onProgress(`Posted unique ${posted.length} (${n}.jpg)`);
+    posted.push(source.n);
+    await onProgress(`Posted unique ${posted.length}/${jobs.length} (${source.n}.jpg)`);
   }
   void options.addRepeat;
 
@@ -2463,22 +2800,19 @@ export async function rebuildReconsiderThread(client, onProgress = async () => {
     }
   }
 
-  return { posted, gaps: normalizeGaps(sequence), count: sequence.count };
+  return { posted, gaps: normalizeGaps(sequence), count: sequence.count, lineupMarked };
 }
 
 export function localFileCount(sequence) {
   let present = 0;
   for (let n = 1; n <= sequence.count; n++) {
-    if (existsSync(filePathFor(n))) present += 1;
+    if (existsSync(cachePathFor(n)) || existsSync(filePathFor(n))) present += 1;
   }
   return present;
 }
 
 export async function postNumberedImage(thread, n) {
-  const filePath = filePathFor(n);
-  if (!existsSync(filePath)) {
-    throw new Error(`Missing ${n}.jpg`);
-  }
+  const filePath = await ensureImagePathFor(n);
   return thread.send({
     content: String(n),
     files: [new AttachmentBuilder(filePath, { name: `${n}.jpg` })],
@@ -2486,8 +2820,7 @@ export async function postNumberedImage(thread, n) {
 }
 
 export async function tryEditNumberedImage(message, n) {
-  const filePath = filePathFor(n);
-  if (!existsSync(filePath)) throw new Error(`Missing ${n}.jpg`);
+  const filePath = await ensureImagePathFor(n);
 
   const edited = await Promise.race([
     message.edit({
@@ -2622,8 +2955,12 @@ export async function rebuildReviewThread(client, onProgress = async () => {}, o
     }
     filled += 1;
     present.set(n, posted);
-    const localPath = filePathFor(n);
-    const hash = existsSync(localPath) ? await fileSha256(localPath) : null;
+    let hash = null;
+    try {
+      hash = await fileSha256(await ensureImagePathFor(n));
+    } catch {
+      hash = null;
+    }
     const snaps = (hash && combined[hash]) || [];
     if (posted && snaps.length) {
       await applyReactionSnapshots(posted, snaps);
