@@ -1,4 +1,5 @@
-const OAUTH_HTML = `<!DOCTYPE html>
+// Superseded by src/circuit-worker.ts — Rainbow Circuit host, OAuth, and race WebSocket rooms.
+
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -13,7 +14,7 @@ const OAUTH_HTML = `<!DOCTYPE html>
 <body>
   <main>
     <h1>Discord authorization</h1>
-    <p>This URL is the OAuth2 redirect for the Rainbow Circuit Discord Activity. You can close this tab and launch the game from a Discord voice channel.</p>
+    <p>This URL is the OAuth2 redirect for the Rainbow Circuit Discord Activity. You can close this tab and launch the game from the #rainbow-circuit text channel. Stay in whatever voice call you already have — the race does not replace it.</p>
   </main>
 </body>
 </html>`;
@@ -33,7 +34,7 @@ const CIRCUIT_HTML = `<!DOCTYPE html>
 <body>
   <main>
     <h1>Rainbow Circuit</h1>
-    <p>Discord Activity host is up. Set URL mapping <code>/</code> to <code>circuit.whatispugdoing.com</code> and launch from a voice channel.</p>
+    <p>Host is up. Launch from the <strong>#rainbow-circuit</strong> text channel — keep your existing voice call. When you are done, use the red hand on this panel to stop the race. That does not disconnect you from voice.</p>
   </main>
 </body>
 </html>`;

@@ -17,6 +17,13 @@ cpSync(join(root, "discord-oauth.html"), join(dist, "discord-oauth.html"));
 cpSync(join(root, "discord-oauth.html"), join(dist, "discord-oauth/index.html"));
 cpSync(join(root, "circuit.html"), join(dist, "circuit/index.html"));
 
+const circuitGame = join(root, "circuit-game");
+try {
+  cpSync(circuitGame, join(dist, "circuit-game"), { recursive: true });
+} catch {
+  console.warn("circuit-game/ missing — Rainbow Circuit assets not bundled");
+}
+
 for (const skip of ["ref-mockup.png", "meagan-source.png", "pug-hero-alt.jpg"]) {
   rmSync(join(dist, "assets", skip), { force: true });
 }

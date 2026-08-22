@@ -1,5 +1,5 @@
 name = "whatispugdoing"
-main = "src/worker.js"
+main = "src/circuit-worker.ts"
 compatibility_date = "2026-08-03"
 
 [assets]
@@ -10,6 +10,17 @@ run_worker_first = true
 # Public Discord application id (not the client secret).
 [vars]
 DISCORD_CLIENT_ID = "1539068321310310531"
+
+[alias]
+shared = "../mario/shared/src/index.ts"
+
+[[durable_objects.bindings]]
+name = "RACE_HUB"
+class_name = "RaceHub"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RaceHub"]
 
 # Cloudflare will create DNS + certificates for these hostnames on deploy
 [[routes]]

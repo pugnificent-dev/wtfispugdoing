@@ -9,6 +9,8 @@ Public URLs used by the Rainbow Circuit Discord app:
 - OAuth2 redirect: `https://whatispugdoing.com/discord-oauth`
 - Activity host / URL mapping `/`: `circuit.whatispugdoing.com`
 
+Launch from the **#rainbow-circuit** text channel. Stay in any voice call you already have — the race does not replace it.
+
 In the Discord Developer Portal:
 
 1. **OAuth2 → Redirects** add `https://whatispugdoing.com/discord-oauth` (and optionally `https://127.0.0.1`).
